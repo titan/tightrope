@@ -94,9 +94,9 @@
              (else (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++; len += 2 + 4 + 4; " (if (= objarrcnt 1) (string-append " objarrbyte = new byte[" attr-name ".length][]; for (int j = 0; j < " attr-name ".length; j ++) { objarrbyte[j] = " (>java-class-name (symbol->string base-type)) "Serializer.encode(" attr-name "[j]); len += 4 + objarrbyte[j].length;} count ++;} ") (string-append " objarrbytes[" objarridx "] = new byte[" attr-name ".length][]; for (int j = 0; j < " attr-name ".length; j ++) { objarrbytes[" objarridx "][j] = " (>java-class-name (symbol->string base-type)) "Serializer.encode(" attr-name "[j]); len += 4 + objarraybyte[" objarridx "][j].length;} count ++;} "))))))
           (cond
            ((eq? type 'byte) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; len += 2; count ++;}"))
-           ((eq? type 'short) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 2; dtags[dlen] = " idx "; dlen ++;} count ++;}"))
-           ((eq? type 'int) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 4; dtags[dlen] = " idx "; dlen ++;} count ++;}"))
-           ((eq? type 'long) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 8; dtags[dlen] = " idx "; dlen ++;} count ++;}"))
+           ((eq? type 'short) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 4 + 2; dtags[dlen] = " idx "; dlen ++;} count ++;}"))
+           ((eq? type 'int) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 4 + 4; dtags[dlen] = " idx "; dlen ++;} count ++;}"))
+           ((eq? type 'long) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 4 + 8; dtags[dlen] = " idx "; dlen ++;} count ++;}"))
            ((eq? type 'string) (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++;" (if (= strcnt 1) (string-append " strbyte = " attr-name ".getBytes(\"utf-8\"); len += 2 + 4 + strbyte.length;") (string-append " strbytes[" stridx "] = " attr-name ".getBytes(\"utf-8\"); len += 2 + 4 + strbytes[" stridx "].length;")) " count ++;}"))
            (else (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++;" (if (= objcnt 1) (string-append " objbyte = " (>java-class-name (symbol->string type)) "Serializer.encode(" attr-name "); len += 2 + 4 + objbyte.length;") (string-append "objbytes[" objidx "] = " (>java-class-name name) "Serializer.encode(" attr-name "); len += 2 + 4 + objbytes[" objidx "].length;")) "count ++;}")))))))
 
@@ -178,10 +178,10 @@
                  ((eq? (array-base-type type) 'string) (let ((bs (if (> strarrcnt 1) (string-append " strarrbytes[" strarridx "][j]") " strarrbyte[j]"))) (string-append "sum = 0; for (int j = 0; j < " attr-name ".length; j ++) {byte [] bs = " bs "; sum += bs.length;} buf.putInt(sum); buf.putInt(" attr-name ".length); for (int j = 0; j < " attr-name ".length; j ++) { byte [] bs = " bs "; buf.putInt(bs.length); buf.put(bs);}")))
                  (else (let ((bs (if (> objarrcnt 1) (string-append " objarrbytes[" objarridx "][j]") "objarrbyte[j]"))) (string-append "sum = 0; for (int j = 0; j < "attr-name".length; j ++) {byte [] bs = "bs"; sum += bs.length;} buf.putInt(sum); buf.putInt(" attr-name ".length); for (int j = 0; j < " attr-name ".length; j ++) { byte [] bs = " bs "; buf.putInt(bs.length); buf.put(bs);}"))))
                 (cond
-                 ((eq? type 'byte) (string-append "buf.put(" attr-name ");"))
-                 ((eq? type 'short) (string-append "buf.putShort(" attr-name ");"))
-                 ((eq? type 'int) (string-append "buf.putInt(" attr-name ");"))
-                 ((eq? type 'long) (string-append "buf.putLong(" attr-name ");"))
+                 ((eq? type 'byte) (string-append "buf.putInt(1);buf.put(" attr-name ");"))
+                 ((eq? type 'short) (string-append "buf.putInt(2);buf.putShort(" attr-name ");"))
+                 ((eq? type 'int) (string-append "buf.putInt(4);buf.putInt(" attr-name ");"))
+                 ((eq? type 'long) (string-append "buf.putLong(8);buf.putLong(" attr-name ");"))
                  ((eq? type 'string) (if (= strcnt 1) "buf.putInt(strbyte.length);buf.put(strbyte);" (string-append "buf.putInt(strbytes[" stridx "].length);buf.put(strbytes[" stridx "]);")))
                  (else (if (= objcnt 1) "buf.putInt(objbyte.length);buf.put(objbyte);" (string-append "buf.putInt(objbytes[" objidx "].length);buf.put(objbytes[" objidx "]);" )))))))
       (string-append "case " idx ":" set " break;"))))
@@ -278,10 +278,10 @@
                   (let ((custom-class-name (>java-class-name (symbol->string (array-base-type type)))))
                     (string-append "{int total = buf.getInt(); int len = buf.getInt(); " custom-class-name " [] tmp = new " custom-class-name "[len]; for (int j = 0; j < len; j ++) { int l = buf.getInt(); byte [] b = new byte[l]; buf.get(b); tmp[j] = " custom-class-name "Serializer.decode(b); } " attr-name " = tmp; }"))))
                 (cond
-                 ((eq? type 'byte) (string-append attr-name " = buf.get();"))
-                 ((eq? type 'short) (string-append attr-name " = buf.getShort();"))
-                 ((eq? type 'int) (string-append attr-name " = buf.getInt();"))
-                 ((eq? type 'long) (string-append attr-name " = buf.getLong();"))
+                 ((eq? type 'byte) (string-append "buf.getInt();" attr-name " = buf.get();"))
+                 ((eq? type 'short) (string-append "buf.getInt();" attr-name " = buf.getShort();"))
+                 ((eq? type 'int) (string-append "buf.getInt();" attr-name " = buf.getInt();"))
+                 ((eq? type 'long) (string-append "buf.getInt();" attr-name " = buf.getLong();"))
                  ((eq? type 'string) (string-append "{ int len = buf.getInt(); byte tmp [] = new byte[len]; buf.get(tmp); " attr-name " = new String(tmp, \"utf-8\"); }"))
                  (else
                   (let ((custom-class-name (>java-class-name (symbol->string type))))

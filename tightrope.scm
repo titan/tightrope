@@ -8,7 +8,7 @@
                    " -serial        Generate serialize/deserialize code\n"
                    " -elixir        Generate codes for Elixir\n"
                    " -java          Generate codes for Java\n"
-                   " -d <directory> Specify where to place generated files")))
+                   " -d <directory> Specify where to place generated files\n")))
     (let loop ((opts options)
                (opts-str ""))
       (if (null? opts)
