@@ -18,6 +18,21 @@
       (let ((x (car lst)))
         (append (qsort (filter (lambda (y) (< (comparator y x) 0)) lst) comparator) (list x) (qsort (filter (lambda (y) (> (comparator y x) 0)) lst) comparator)))))
 
+(define (mkdir-p dir)
+  (let loop ((rest (string->list dir))
+        (dir? #f)
+        (dst '()))
+    (if (null? rest)
+        (mkdir (list->string (reverse dst)))
+        (if dir?
+            (let ((d (list->string (reverse dst))))
+              (if (not (file-exists? d))
+                  (mkdir d))
+              (loop rest #f dst))
+            (if (char=? (car rest) (directory-separator))
+                (loop (cdr rest) #t (cons (car rest) dst))
+                (loop (cdr rest) #f (cons (car rest) dst)))))))
+
 ;; [str0 str1 ...] -> str
 (define (strcat strs)
   (reduce (lambda (a x) (string-append a x)) "" strs))

@@ -1,4 +1,4 @@
-(define (generate-elixir-entities env)
+(define (generate-elixir-entities env dir)
   '())
-(define (generate-elixir-serials env)
+(define (generate-elixir-serials env dir)
   '())

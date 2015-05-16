@@ -16,6 +16,9 @@
   (let ((l (string->list (>java-name name))))
     (list->string (cons (char-upcase (car l)) (cdr l)))))
 
+(define (package->dir-name pkg)
+  (list->string (map (lambda (x) (if (char=? x #\.) #\/ x)) (string->list pkg))))
+
 ;; generate entity
 
 (define (generate-java-field-declare field)
@@ -33,7 +36,7 @@
          ((eq? type 'string) (string-append "public String " name ";"))
          (else (string-append "public " (symbol->string type) " " name ";"))))))
 
-(define (generate-java-entity package struct)
+(define (generate-java-entity package struct dir)
   (let* ((name (struct-name struct))
          (fields (struct-fields struct)))
     (let ((pkg (if package (string-append "package " package ";") ""))
@@ -41,15 +44,18 @@
           (class-stop "}")
           (field-decls (strcat (map generate-java-field-declare fields))))
       (with-output-to-file
-          (string-append (>java-class-name name) ".java")
+          (string-append dir (>java-class-name name) ".java")
         (lambda ()
           (write-string (string-append pkg class-start field-decls class-stop)))
         (list 'replace)))))
 
-(define (generate-java-entities env)
-  (let ((package (get-package env)))
+(define (generate-java-entities env dir)
+  (let* ((package (get-package env))
+         (path (if (> (string-length dir) 0) (string-append dir (package->dir-name package) "/") "")))
+    (if (not (file-exists? path))
+        (mkdir-p path))
     (for-each
-     (lambda (entity) (generate-java-entity package entity))
+     (lambda (entity) (generate-java-entity package entity path))
      (get-structs env))))
 
 ;; generate serializer
@@ -287,7 +293,7 @@
           (get-data (generate-java-decoder-get-datas struct)))
       (string-append fun-start get-fields get-data fun-end))))
 
-(define (generate-java-serial package struct)
+(define (generate-java-serial package struct dir)
   (let ((name (>java-name (struct-name struct)))
         (fields (struct-fields struct)))
     (let ((throws (if (or (> (string-field-count fields) 0) (> (string-array-count fields) 0))  " throws java.io.UnsupportedEncodingException" "")))
@@ -300,19 +306,23 @@
             (decode-fun (generate-java-decoder struct))
             (decode-zero-pack-fun (string-append "public static " (>java-class-name name) " decode0Pack(byte [] bytes)" throws " { return decode(ZeroPack.unpack(bytes));}")))
         (with-output-to-file
-            (string-append (>java-class-name name) "Serializer.java")
+            (string-append dir (>java-class-name name) "Serializer.java")
           (lambda ()
             (write-string (string-append pkg import class-start encode-fun "\n" encode-zero-pack-fun "\n" decode-fun "\n" decode-zero-pack-fun class-stop)))
           (list 'replace))))))
 
-(define (generate-java-serials env)
-  (let ((package (get-package env)))
+(define (generate-java-serials env dir)
+  (let* ((package (get-package env))
+         (path (if (> (string-length dir) 0) (string-append dir (package->dir-name package) "/") "")))
+    (if (not (file-exists? path))
+        (mkdir-p path))
     (for-each
-     (lambda (entity) (generate-java-serial package entity))
+     (lambda (entity) (generate-java-serial package entity path))
      (get-structs env))))
 
-(define (generate-java-zero-pack env)
-  (let ((package (get-package env)))
+(define (generate-java-zero-pack env dir)
+  (let* ((package (get-package env))
+         (path (if (> (string-length dir) 0) (string-append dir (package->dir-name package) "/") "")))
     (let ((pkg (if package (string-append "package " package ";") ""))
           (src "import java.nio.ByteBuffer;
 
@@ -441,8 +451,10 @@ public class ZeroPack {
     }
 }
 "))
+      (if (not (file-exists? path))
+          (mkdir-p path))
       (with-output-to-file
-          "ZeroPack.java"
+          (string-append path "ZeroPack.java")
         (lambda ()
           (write-string (string-append pkg src)))
         (list 'replace)))))
