@@ -43,13 +43,19 @@
 (define (get-package env)
   (let ((p (assoc "package" env)))
     (if p
-        (if (= (string-length (car p)) 0)
+        (if (= (string-length (cdr p)) 0)
             #f
             (cdr p))
         #f)))
 
 (define (get-structs env)
   (filter (lambda (x) (not (equal? "package" (car x)))) env))
+
+(define (get-struct env name)
+  (let ((s (assoc name env)))
+    (if s
+        (cdr s)
+        #f)))
 
 (define (struct-name struct)
   (car struct))
@@ -108,12 +114,6 @@
 
 (define (field-type field)
   (vector-ref field 2))
-
-(define (field-len field) ;; only useful for array type
-  (if (array-type? (field-type field))
-      (if (= (vector-length field) 4)
-          (vector-ref field 3)
-          0)))
 
 (define (eval-primitive type tag field)
   (let ((name (symbol->string (car field)))

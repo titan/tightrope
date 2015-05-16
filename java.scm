@@ -19,6 +19,23 @@
 (define (package->dir-name pkg)
   (list->string (map (lambda (x) (if (char=? x #\.) #\/ x)) (string->list pkg))))
 
+(define (has-string-type-deeply? env struct)
+  (define (batch-check env types)
+    (reduce (lambda (a x) (or a x)) #f (map (lambda (y) (let ((s (get-struct env (symbol->string y))))
+                                                (if s
+                                                    (has-string-type-deeply? env (cdr s))
+                                                    #f))) types)))
+  (let ((fields (struct-fields struct)))
+    (cond
+     ((or (> (string-field-count fields) 0) (> (string-array-count fields) 0)) #t)
+     ((or (> (custom-field-count fields) 0) (> (custom-array-count fields) 0))
+      (let ((custom-fields (filter (lambda (x) (custom-type? (field-type x))) fields))
+            (custom-arrays (filter (lambda (x) (custom-array-type? (field-type x))) fields)))
+        (let ((result-for-custom-fields (batch-check env (map (lambda (x) (field-type x)) custom-fields)))
+              (result-for-custom-arrays (batch-check env (map (lambda (x) (array-base-type (field-type x))) custom-arrays))))
+          (or result-for-custom-fields result-for-custom-arrays))))
+     (else #f))))
+
 ;; generate entity
 
 (define (generate-java-field-declare field)
@@ -204,10 +221,10 @@
                   (custom-array-count (struct-fields struct)))
                  sets))))))
 
-(define (generate-java-encoder struct)
+(define (generate-java-encoder struct throws)
   (let ((name (>java-name (struct-name struct)))
         (fields (struct-fields struct)))
-    (let ((fun-start (string-append "public static byte [] encode(" (>java-class-name name) " " name ")" (if (or (> (string-field-count fields) 0) (> (string-array-count fields) 0)) " throws java.io.UnsupportedEncodingException" "") " {short count = 0; int len = 2; short [] tags = new short [" (number->string (length fields)) "]; short tlen = 0; short [] dtags = new short [" (number->string (length fields)) "]; short dlen = 0;" (let ((count (string-field-count fields))) (cond ((> count 1) (string-append " byte [][] strbytes = new byte[" (number->string count) "][];")) ((> count 0) " byte [] strbyte = null;") (else ""))) (let ((count (custom-field-count fields))) (cond ((> count 1) (string-append " byte [][] objbytes = new byte[" (number->string count) "][];")) ((> count 0) " byte [] objbyte = null;") (else ""))) (let ((count (string-array-count fields))) (cond ((> count 1) (string-append " byte [][][] strarrbytes = new byte[" (number->string count) "][][];")) ((> count 0) " byte [][] strarrbyte = null;") (else ""))) (let ((count (custom-array-count fields))) (cond ((> count 1) (string-append " byte [][][] objarrbytes = new byte[" (number->string count) "][][];")) ((> count 0) " byte [][] objarrbyte = null;") (else "")))))
+    (let ((fun-start (string-append "public static byte [] encode(" (>java-class-name name) " " name ")" throws " {short count = 0; int len = 2; short [] tags = new short [" (number->string (length fields)) "]; short tlen = 0; short [] dtags = new short [" (number->string (length fields)) "]; short dlen = 0;" (let ((count (string-field-count fields))) (cond ((> count 1) (string-append " byte [][] strbytes = new byte[" (number->string count) "][];")) ((> count 0) " byte [] strbyte = null;") (else ""))) (let ((count (custom-field-count fields))) (cond ((> count 1) (string-append " byte [][] objbytes = new byte[" (number->string count) "][];")) ((> count 0) " byte [] objbyte = null;") (else ""))) (let ((count (string-array-count fields))) (cond ((> count 1) (string-append " byte [][][] strarrbytes = new byte[" (number->string count) "][][];")) ((> count 0) " byte [][] strarrbyte = null;") (else ""))) (let ((count (custom-array-count fields))) (cond ((> count 1) (string-append " byte [][][] objarrbytes = new byte[" (number->string count) "][][];")) ((> count 0) " byte [][] objarrbyte = null;") (else "")))))
           (init (generate-java-encoder-inits struct))
           (set-fields (generate-java-encoder-set-fields struct))
           (set-data (generate-java-encoder-set-datas struct))
@@ -284,26 +301,26 @@
         (let ((field (car fields)))
           (loop (cdr fields) (+ idx 1) (if (eq? 'string (field-type field)) (+ stridx 1) stridx) (if (custom-type? (field-type field)) (+ objidx 1) objidx) (cons (generate-java-decoder-get-data (>java-name (struct-name struct)) field (number->string idx) (number->string stridx) (string-field-count fields) (number->string objidx) (custom-field-count fields)) gets))))))
 
-(define (generate-java-decoder struct)
+(define (generate-java-decoder struct throws)
   (let ((name (>java-name (struct-name struct)))
         (fields (struct-fields struct)))
-    (let ((fun-start (string-append "public static " (>java-class-name name) " decode(byte [] bytes)" (if (or (> (string-field-count fields) 0) (> (string-array-count fields) 0)) " throws java.io.UnsupportedEncodingException" "") " { ByteBuffer buf = ByteBuffer.wrap(bytes); short count = buf.getShort(); if (count > 0) { " (>java-class-name name) " " name " = new " (>java-class-name name) "(); short [] dtags = new short[" (number->string (length fields)) "]; int dlen = 0; short tag = 0;"))
+    (let ((fun-start (string-append "public static " (>java-class-name name) " decode(byte [] bytes)" throws " { ByteBuffer buf = ByteBuffer.wrap(bytes); short count = buf.getShort(); if (count > 0) { " (>java-class-name name) " " name " = new " (>java-class-name name) "(); short [] dtags = new short[" (number->string (length fields)) "]; int dlen = 0; short tag = 0;"))
           (fun-end (string-append "return " name ";} return null;}"))
           (get-fields (generate-java-decoder-get-fields struct))
           (get-data (generate-java-decoder-get-datas struct)))
       (string-append fun-start get-fields get-data fun-end))))
 
-(define (generate-java-serial package struct dir)
+(define (generate-java-serial env package struct dir)
   (let ((name (>java-name (struct-name struct)))
         (fields (struct-fields struct)))
-    (let ((throws (if (or (> (string-field-count fields) 0) (> (string-array-count fields) 0))  " throws java.io.UnsupportedEncodingException" "")))
+    (let ((throws (if (has-string-type-deeply? env struct) " throws java.io.UnsupportedEncodingException" "")))
       (let ((pkg (if package (string-append "package " package ";") ""))
             (import "import java.nio.ByteBuffer;")
             (class-start (string-append "public class " (>java-class-name name) "Serializer {"))
             (class-stop "}")
-            (encode-fun (generate-java-encoder struct))
+            (encode-fun (generate-java-encoder struct throws))
             (encode-zero-pack-fun (string-append "public static byte [] encode0Pack(" (>java-class-name name) " " name ")" throws " { return ZeroPack.pack(encode(" name "));}"))
-            (decode-fun (generate-java-decoder struct))
+            (decode-fun (generate-java-decoder struct throws))
             (decode-zero-pack-fun (string-append "public static " (>java-class-name name) " decode0Pack(byte [] bytes)" throws " { return decode(ZeroPack.unpack(bytes));}")))
         (with-output-to-file
             (string-append dir (>java-class-name name) "Serializer.java")
@@ -317,7 +334,7 @@
     (if (not (file-exists? path))
         (mkdir-p path))
     (for-each
-     (lambda (entity) (generate-java-serial package entity path))
+     (lambda (entity) (generate-java-serial env package entity path))
      (get-structs env))))
 
 (define (generate-java-zero-pack env dir)
