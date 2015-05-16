@@ -68,8 +68,12 @@
 
 (define (generate-java-entities env dir)
   (let* ((package (get-package env))
-         (path (if (> (string-length dir) 0) (string-append dir (package->dir-name package) "/") "")))
-    (if (not (file-exists? path))
+         (path (cond
+                ((and (> (string-length dir) 0) package) (string-append dir (package->dir-name package) "/"))
+                ((> (string-length dir) 0) dir)
+                (package (string-append (package->dir-name package) "/"))
+                (else ""))))
+    (if (and (> (string-length path) 0) (not (file-exists? path)))
         (mkdir-p path))
     (for-each
      (lambda (entity) (generate-java-entity package entity path))
@@ -330,8 +334,12 @@
 
 (define (generate-java-serials env dir)
   (let* ((package (get-package env))
-         (path (if (> (string-length dir) 0) (string-append dir (package->dir-name package) "/") "")))
-    (if (not (file-exists? path))
+         (path (cond
+                ((and (> (string-length dir) 0) package) (string-append dir (package->dir-name package) "/"))
+                ((> (string-length dir) 0) dir)
+                (package (string-append (package->dir-name package) "/"))
+                (else ""))))
+    (if (and (> (string-length path) 0) (not (file-exists? path)))
         (mkdir-p path))
     (for-each
      (lambda (entity) (generate-java-serial env package entity path))
@@ -339,7 +347,11 @@
 
 (define (generate-java-zero-pack env dir)
   (let* ((package (get-package env))
-         (path (if (> (string-length dir) 0) (string-append dir (package->dir-name package) "/") "")))
+         (path (cond
+                ((and (> (string-length dir) 0) package) (string-append dir (package->dir-name package) "/"))
+                ((> (string-length dir) 0) dir)
+                (package (string-append (package->dir-name package) "/"))
+                (else ""))))
     (let ((pkg (if package (string-append "package " package ";") ""))
           (src "import java.nio.ByteBuffer;
 
@@ -468,7 +480,7 @@ public class ZeroPack {
     }
 }
 "))
-      (if (not (file-exists? path))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
           (mkdir-p path))
       (with-output-to-file
           (string-append path "ZeroPack.java")

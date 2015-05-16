@@ -34,11 +34,12 @@
      (let ((env (read-file f)))
        (if java?
            (begin
-             (generate-java-zero-pack env dir)
              (if entity?
                  (generate-java-entities env dir))
              (if serial?
-                 (generate-java-serials env dir))))
+                 (begin
+                   (generate-java-zero-pack env dir)
+                   (generate-java-serials env dir)))))
        (if elixir?
            (begin
              (if entity?
@@ -60,12 +61,14 @@
           (if (null? args)
               (if (null? files)
                   (usage prog)
-                  (let ((last-char (string-ref dir (- (string-length dir) 1))))
-                    (if (file-exists? dir)
-                        (do-work entity serial elixir java (if (not (char=? last-char #\/)) (string-append dir "/") dir) files)
-                        (begin
-                          (mkdir-p dir)
-                          (do-work entity serial elixir java (if (not (char=? last-char #\/)) (string-append dir "/") dir) files)))))
+                  (if (string=? dir "")
+                      (do-work entity serial elixir java dir files)
+                      (let ((last-char (string-ref dir (- (string-length dir) 1))))
+                        (if (file-exists? dir)
+                            (do-work entity serial elixir java (if (not (char=? last-char #\/)) (string-append dir "/") dir) files)
+                            (begin
+                              (mkdir-p dir)
+                              (do-work entity serial elixir java (if (not (char=? last-char #\/)) (string-append dir "/") dir) files))))))
               (let ((arg (car args)))
                 (cond
                  ((equal? arg "-entity")
