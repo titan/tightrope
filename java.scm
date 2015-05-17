@@ -40,7 +40,7 @@
 
 (define (generate-java-field-declare field)
   (let ((name (>java-name (field-name field)))
-        (tag (field-tag field))
+        (tag (number->string (field-tag field)))
         (type (field-type field)))
     (if (array-type? type)
         (let ((base-type (array-base-type type)))
@@ -84,25 +84,25 @@
 ;; generate encoder
 (define (generate-java-encoder-init struct-name field idx stridx strcnt objidx objcnt strarridx strarrcnt objarridx objarrcnt)
   (let ((name (>java-name (field-name field)))
-        (tag (field-tag field))
+        (tag (number->string (field-tag field)))
         (type (field-type field)))
     (let ((attr-name (string-append struct-name "." name)))
       (if (array-type? type)
           (let ((base-type (array-base-type type)))
             (cond
-             ((eq? base-type 'byte) (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++; len += 2 + 4 + " attr-name ".length; count ++;}"))
-             ((eq? base-type 'short) (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++; len += 2 + 4 + " attr-name ".length * 2; count ++;}"))
-             ((eq? base-type 'int) (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++; len += 2 + 4 + " attr-name ".length * 4; count ++;}"))
-             ((eq? base-type 'long) (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++; len += 2 + 4 + " attr-name ".length * 8; count ++;}"))
-             ((eq? base-type 'string) (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++; len += 2 + 4 + 4; " (if (= strarrcnt 1) (string-append " strarrbyte = new byte[" attr-name ".length][]; for (int j = 0; j < " attr-name ".length; j ++) { strarrbyte[j] = " attr-name "[j].getBytes(\"utf-8\"); len += 4 + strarrbyte[j].length;} count ++;} ") (string-append " strarrbytes[" strarridx "] = new byte[" attr-name ".length][]; for (int j = 0; j < " attr-name ".length; j ++) { strarrbytes[" strarridx "][j] = " attr-name "[j].getBytes(\"utf-8\"); len += 4 + strarrbytes[" strarridx "][j].length;} count ++;} "))))
-             (else (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++; len += 2 + 4 + 4; " (if (= objarrcnt 1) (string-append " objarrbyte = new byte[" attr-name ".length][]; for (int j = 0; j < " attr-name ".length; j ++) { objarrbyte[j] = " (>java-class-name (symbol->string base-type)) "Serializer.encode(" attr-name "[j]); len += 4 + objarrbyte[j].length;} count ++;} ") (string-append " objarrbytes[" objarridx "] = new byte[" attr-name ".length][]; for (int j = 0; j < " attr-name ".length; j ++) { objarrbytes[" objarridx "][j] = " (>java-class-name (symbol->string base-type)) "Serializer.encode(" attr-name "[j]); len += 4 + objarraybyte[" objarridx "][j].length;} count ++;} "))))))
+             ((eq? base-type 'byte) (string-append "if (" attr-name " != null) {tags[tlen] = " tag "; tlen ++; dtags[dlen] = " tag "; dlen ++; len += 2 + 4 + " attr-name ".length; count ++;}"))
+             ((eq? base-type 'short) (string-append "if (" attr-name " != null) {tags[tlen] = " tag "; tlen ++; dtags[dlen] = " tag "; dlen ++; len += 2 + 4 + " attr-name ".length * 2; count ++;}"))
+             ((eq? base-type 'int) (string-append "if (" attr-name " != null) {tags[tlen] = " tag "; tlen ++; dtags[dlen] = " tag "; dlen ++; len += 2 + 4 + " attr-name ".length * 4; count ++;}"))
+             ((eq? base-type 'long) (string-append "if (" attr-name " != null) {tags[tlen] = " tag "; tlen ++; dtags[dlen] = " tag "; dlen ++; len += 2 + 4 + " attr-name ".length * 8; count ++;}"))
+             ((eq? base-type 'string) (string-append "if (" attr-name " != null) {tags[tlen] = " tag "; tlen ++; dtags[dlen] = " tag "; dlen ++; len += 2 + 4 + 4; " (if (= strarrcnt 1) (string-append " strarrbyte = new byte[" attr-name ".length][]; for (int j = 0; j < " attr-name ".length; j ++) { strarrbyte[j] = " attr-name "[j].getBytes(\"utf-8\"); len += 4 + strarrbyte[j].length;} count ++;} ") (string-append " strarrbytes[" strarridx "] = new byte[" attr-name ".length][]; for (int j = 0; j < " attr-name ".length; j ++) { strarrbytes[" strarridx "][j] = " attr-name "[j].getBytes(\"utf-8\"); len += 4 + strarrbytes[" strarridx "][j].length;} count ++;} "))))
+             (else (string-append "if (" attr-name " != null) {tags[tlen] = " tag "; tlen ++; dtags[dlen] = " tag "; dlen ++; len += 2 + 4 + 4; " (if (= objarrcnt 1) (string-append " objarrbyte = new byte[" attr-name ".length][]; for (int j = 0; j < " attr-name ".length; j ++) { objarrbyte[j] = " (>java-class-name (symbol->string base-type)) "Serializer.encode(" attr-name "[j]); len += 4 + objarrbyte[j].length;} count ++;} ") (string-append " objarrbytes[" objarridx "] = new byte[" attr-name ".length][]; for (int j = 0; j < " attr-name ".length; j ++) { objarrbytes[" objarridx "][j] = " (>java-class-name (symbol->string base-type)) "Serializer.encode(" attr-name "[j]); len += 4 + objarraybyte[" objarridx "][j].length;} count ++;} "))))))
           (cond
-           ((eq? type 'byte) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; len += 2; count ++;}"))
-           ((eq? type 'short) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 4 + 2; dtags[dlen] = " idx "; dlen ++;} count ++;}"))
-           ((eq? type 'int) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 4 + 4; dtags[dlen] = " idx "; dlen ++;} count ++;}"))
-           ((eq? type 'long) (string-append "if (" attr-name " != 0) {tags[tlen] = " idx "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 4 + 8; dtags[dlen] = " idx "; dlen ++;} count ++;}"))
-           ((eq? type 'string) (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++;" (if (= strcnt 1) (string-append " strbyte = " attr-name ".getBytes(\"utf-8\"); len += 2 + 4 + strbyte.length;") (string-append " strbytes[" stridx "] = " attr-name ".getBytes(\"utf-8\"); len += 2 + 4 + strbytes[" stridx "].length;")) " count ++;}"))
-           (else (string-append "if (" attr-name " != null) {tags[tlen] = " idx "; tlen ++; dtags[dlen] = " idx "; dlen ++;" (if (= objcnt 1) (string-append " objbyte = " (>java-class-name (symbol->string type)) "Serializer.encode(" attr-name "); len += 2 + 4 + objbyte.length;") (string-append "objbytes[" objidx "] = " (>java-class-name name) "Serializer.encode(" attr-name "); len += 2 + 4 + objbytes[" objidx "].length;")) "count ++;}")))))))
+           ((eq? type 'byte) (string-append "if (" attr-name " != 0) {tags[tlen] = " tag "; tlen ++; len += 2; count ++;}"))
+           ((eq? type 'short) (string-append "if (" attr-name " != 0) {tags[tlen] = " tag "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 4 + 2; dtags[dlen] = " tag "; dlen ++;} count ++;}"))
+           ((eq? type 'int) (string-append "if (" attr-name " != 0) {tags[tlen] = " tag "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 4 + 4; dtags[dlen] = " tag "; dlen ++;} count ++;}"))
+           ((eq? type 'long) (string-append "if (" attr-name " != 0) {tags[tlen] = " tag "; tlen ++; if (-16384 < " attr-name " && " attr-name " < 16383) { len += 2; } else { len += 2 + 4 + 8; dtags[dlen] = " tag "; dlen ++;} count ++;}"))
+           ((eq? type 'string) (string-append "if (" attr-name " != null) {tags[tlen] = " tag "; tlen ++; dtags[dlen] = " tag "; dlen ++;" (if (= strcnt 1) (string-append " strbyte = " attr-name ".getBytes(\"utf-8\"); len += 2 + 4 + strbyte.length;") (string-append " strbytes[" stridx "] = " attr-name ".getBytes(\"utf-8\"); len += 2 + 4 + strbytes[" stridx "].length;")) " count ++;}"))
+           (else (string-append "if (" attr-name " != null) {tags[tlen] = " tag "; tlen ++; dtags[dlen] = " tag "; dlen ++;" (if (= objcnt 1) (string-append " objbyte = " (>java-class-name (symbol->string type)) "Serializer.encode(" attr-name "); len += 2 + 4 + objbyte.length;") (string-append "objbytes[" objidx "] = " (>java-class-name name) "Serializer.encode(" attr-name "); len += 2 + 4 + objbytes[" objidx "].length;")) "count ++;}")))))))
 
 (define (generate-java-encoder-inits struct)
   (let loop ((fields (struct-fields struct))
@@ -141,7 +141,7 @@
 
 (define (generate-java-encoder-set-field struct-name field idx)
   (let ((name (>java-name (field-name field)))
-        (tag (field-tag field))
+        (tag (number->string (field-tag field)))
         (type (field-type field)))
     (let* ((attr-name (string-append struct-name "." name))
            (set
@@ -151,7 +151,7 @@
              ((eq? type 'int) (string-append "if (-16384 < " attr-name " && " attr-name " < 16383) {" "buf.putShort((short)((" attr-name " + 1) * 2));} else {buf.putShort((short) 0);}"))
              ((eq? type 'long) (string-append "if (-16384 < " attr-name " && " attr-name " < 16383) {" "buf.putShort((short)((" attr-name " + 1) * 2));} else {buf.putShort((short) 0);}"))
              (else "buf.putShort((short) 0);"))))
-      (string-append "case " idx ":" set " break;"))))
+      (string-append "case " tag ":" set " break;"))))
 
 (define (generate-java-encoder-set-fields struct)
   (let loop ((fields (struct-fields struct))
@@ -169,7 +169,7 @@
 
 (define (generate-java-encoder-set-data struct-name field idx stridx strcnt objidx objcnt strarridx strarrcnt objarridx objarrcnt)
   (let ((name (>java-name (field-name field)))
-        (tag (field-tag field))
+        (tag (number->string (field-tag field)))
         (type (field-type field)))
     (let* ((attr-name (string-append struct-name "." name))
            (set
@@ -188,7 +188,7 @@
                  ((eq? type 'long) (string-append "buf.putLong(8);buf.putLong(" attr-name ");"))
                  ((eq? type 'string) (if (= strcnt 1) "buf.putInt(strbyte.length);buf.put(strbyte);" (string-append "buf.putInt(strbytes[" stridx "].length);buf.put(strbytes[" stridx "]);")))
                  (else (if (= objcnt 1) "buf.putInt(objbyte.length);buf.put(objbyte);" (string-append "buf.putInt(objbytes[" objidx "].length);buf.put(objbytes[" objidx "]);" )))))))
-      (string-append "case " idx ":" set " break;"))))
+      (string-append "case " tag ":" set " break;"))))
 
 (define (generate-java-encoder-set-datas struct)
   (let loop ((fields (struct-fields struct))
