@@ -21,10 +21,16 @@
 
 (define (has-string-type-deeply? env struct)
   (define (batch-check env types)
-    (reduce (lambda (a x) (or a x)) #f (map (lambda (y) (let ((s (get-struct env (symbol->string y))))
-                                                (if s
-                                                    (has-string-type-deeply? env (cdr s))
-                                                    #f))) types)))
+    (let loop ((rest types)
+               (result #f))
+      (if (null? rest)
+          result
+          (let ((s (get-struct env (symbol->string (car rest)))))
+            (if s
+                (if (has-string-type-deeply? env s)
+                    (loop '() #t)
+                    (loop (cdr rest) #f))
+                (loop (cdr rest) #f))))))
   (let ((fields (struct-fields struct)))
     (cond
      ((or (> (string-field-count fields) 0) (> (string-array-count fields) 0)) #t)

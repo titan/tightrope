@@ -52,10 +52,7 @@
   (filter (lambda (x) (not (equal? "package" (car x)))) env))
 
 (define (get-struct env name)
-  (let ((s (assoc name env)))
-    (if s
-        (cdr s)
-        #f)))
+  (assoc name env))
 
 (define (struct-name struct)
   (car struct))
