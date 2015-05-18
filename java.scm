@@ -119,7 +119,7 @@
              (objarridx 0)
              (inits '()))
     (if (null? fields)
-        (let ((adjust-count "if (tlen > 1) {for (short i = 1; i < tlen; i ++) {if (tags[i - 1] + 1 != tags[i]) {count ++;}}}")
+        (let ((adjust-count "if (tlen > 1) {for (short i = 1; i < tlen; i ++) {if (tags[i - 1] + 1 != tags[i]) {len +=2; count ++;}}}")
               (buffer-init "ByteBuffer buf = ByteBuffer.allocate(len); buf.putShort(count);"))
           (string-append (strcat (reverse inits)) adjust-count buffer-init))
         (let* ((field (car fields))
