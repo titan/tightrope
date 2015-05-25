@@ -263,7 +263,7 @@
              (idx 0)
              (gets '()))
     (if (null? fields)
-        (let ((loop-start "for (short i = 0; i < count; i ++) { short v = buf.getShort(); if ((v & (short)0x01) == 1) { tag += (v - 1) / 2 + 1; } else if (v == 0) { dtags[dlen] = tag; dlen ++; tag ++; } else {")
+        (let ((loop-start "for (short i = 0; i < count; i ++) { short v = buf.getShort(); if ((v & (short)0x01) == 1) { tag += (v - 1) / 2; } else if (v == 0) { dtags[dlen] = tag; dlen ++; tag ++; } else {")
               (loop-stop "tag ++;}}")
               (switch-start "switch (tag) {")
               (switch-stop "default: break;}"))
