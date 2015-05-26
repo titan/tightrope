@@ -433,6 +433,19 @@ public class ZeroPack {
                 }
             }
         }
+        if (ffcnt > 0) {
+            int tmp = buf.position();
+            buf.position(ffpos);
+            buf.put((byte)ffcnt);
+            buf.position(tmp);
+            ffcnt = 0;
+        } else if (zzcnt > 0) {
+            int tmp = buf.position();
+            buf.position(zzpos);
+            buf.put((byte)zzcnt);
+            buf.position(tmp);
+            zzcnt = 0;
+        }
         byte [] out = new byte[buf.capacity() - buf.remaining()];
         buf.rewind();
         buf.get(out);
