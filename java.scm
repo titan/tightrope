@@ -273,7 +273,7 @@
 
 (define (generate-java-decoder-get-data struct-name field idx stridx strcnt objidx objcnt)
   (let ((name (>java-name (field-name field)))
-        (tag (field-tag field))
+        (tag (number->string (field-tag field)))
         (type (field-type field)))
     (let* ((attr-name (string-append struct-name "." name))
            (get
@@ -296,7 +296,7 @@
                  (else
                   (let ((custom-class-name (>java-class-name (symbol->string type))))
                     (string-append "{ int len = buf.getInt(); byte tmp [] = new byte[len]; buf.get(tmp); " attr-name " = " custom-class-name "Serializer.decode(tmp);}")))))))
-      (string-append "case " idx ":" get " break;"))))
+      (string-append "case " tag ":" get " break;"))))
 
 (define (generate-java-decoder-get-datas struct)
   (let loop ((fields (struct-fields struct))
