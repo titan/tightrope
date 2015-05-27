@@ -166,7 +166,7 @@
     (if (null? fields)
         (let ((loop-start "for (short i = 0; i < tlen; i ++) {")
               (loop-stop "}")
-              (insert-skip-field "if (i == 0) {if (tags[0] != 0) {buf.putShort((short)((tags[0] - 0 - 1) * 2 + 1));}} else {if (tags[i - 1] + 1 != tags[i]) {buf.putShort((short)((tags[i] - tags[i - 1] - 1) * 2 + 1));}}")
+              (insert-skip-field "if (i == 0) {if (tags[0] != 0) {buf.putShort((short)((tags[0]) * 2 + 1));}} else {if (tags[i - 1] + 1 != tags[i]) {buf.putShort((short)((tags[i] - tags[i - 1] - 1) * 2 + 1));}}")
               (switch-start "switch (tags[i]) {")
               (switch-stop "}"))
           (string-append loop-start insert-skip-field switch-start (strcat (reverse sets)) switch-stop loop-stop))
