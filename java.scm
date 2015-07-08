@@ -367,8 +367,8 @@ public class ZeroPack {
         byte [] bytes = new byte[8];
         int ffpos = 0;
         int ffcnt = 0;
-        int zzpos = 0;
-        int zzcnt = 0;
+        int oopos = 0;
+        int oocnt = 0;
         for (int i = 0, len = inp.length % 8 == 0? inp.length / 8: inp.length / 8 + 1; i < len; i ++) {
             byte bitmap = 0;
             int k = 0;
@@ -381,6 +381,13 @@ public class ZeroPack {
                 }
             }
             if (bitmap == (byte)0xFF) {
+                if (oocnt > 0) {
+                    int tmp = buf.position();
+                    buf.position(oopos);
+                    buf.put((byte)oocnt);
+                    buf.position(tmp);
+                    oocnt = 0;
+                }
                 if (ffcnt == 0) {
                     buf.put((byte) 0xFF);
                     ffpos = buf.position();
@@ -399,19 +406,26 @@ public class ZeroPack {
                     buf.put(bytes[l]);
                 }
             } else if (bitmap == (byte)0x00) {
-                if (zzcnt == 0) {
-                    buf.put((byte) 0x00);
-                    zzpos = buf.position();
-                    buf.position(zzpos + 1);
-                    zzcnt ++;
-                } else if (zzcnt == 0xFF) {
+                if (ffcnt > 0) {
                     int tmp = buf.position();
-                    buf.position(zzpos);
+                    buf.position(ffpos);
+                    buf.put((byte)ffcnt);
+                    buf.position(tmp);
+                    ffcnt = 0;
+                }
+                if (oocnt == 0) {
+                    buf.put((byte) 0x00);
+                    oopos = buf.position();
+                    buf.position(oopos + 1);
+                    oocnt ++;
+                } else if (oocnt == 0xFF) {
+                    int tmp = buf.position();
+                    buf.position(oopos);
                     buf.put((byte) 0xFF);
                     buf.position(tmp);
-                    zzcnt = 0;
+                    oocnt = 0;
                 } else {
-                    zzcnt ++;
+                    oocnt ++;
                 }
             } else {
                 buf.put(bitmap);
@@ -421,12 +435,12 @@ public class ZeroPack {
                     buf.put((byte)ffcnt);
                     buf.position(tmp);
                     ffcnt = 0;
-                } else if (zzcnt > 0) {
+                } else if (oocnt > 0) {
                     int tmp = buf.position();
-                    buf.position(zzpos);
-                    buf.put((byte)zzcnt);
+                    buf.position(oopos);
+                    buf.put((byte)oocnt);
                     buf.position(tmp);
-                    zzcnt = 0;
+                    oocnt = 0;
                 }
                 for (int l = 0; l < k; l ++) {
                     buf.put(bytes[l]);
@@ -439,12 +453,12 @@ public class ZeroPack {
             buf.put((byte)ffcnt);
             buf.position(tmp);
             ffcnt = 0;
-        } else if (zzcnt > 0) {
+        } else if (oocnt > 0) {
             int tmp = buf.position();
-            buf.position(zzpos);
-            buf.put((byte)zzcnt);
+            buf.position(oopos);
+            buf.put((byte)oocnt);
             buf.position(tmp);
-            zzcnt = 0;
+            oocnt = 0;
         }
         byte [] out = new byte[buf.capacity() - buf.remaining()];
         buf.rewind();
