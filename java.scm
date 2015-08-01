@@ -363,12 +363,13 @@
 
 public class ZeroPack {
     public static byte [] pack(byte [] inp) {
-        ByteBuffer buf = ByteBuffer.allocate(inp.length);
+        ByteBuffer buf = ByteBuffer.allocate(inp.length + inp.length % 8 + 1);
         byte [] bytes = new byte[8];
         int ffpos = 0;
         int ffcnt = 0;
         int oopos = 0;
         int oocnt = 0;
+        buf.put((byte)2); // default factor
         for (int i = 0, len = inp.length % 8 == 0? inp.length / 8: inp.length / 8 + 1; i < len; i ++) {
             byte bitmap = 0;
             int k = 0;
@@ -461,20 +462,17 @@ public class ZeroPack {
             oocnt = 0;
         }
         byte [] out = new byte[buf.capacity() - buf.remaining()];
+        buf.position(0);
+        int buflen = inp.length + inp.length % 8 + 1;
+        buf.put((byte)(buflen / out.length + (buflen % out.length != 0? 1: 0)));
         buf.rewind();
         buf.get(out);
         return out;
     }
-
     public static byte [] zeros = {0, 0, 0, 0, 0, 0, 0, 0};
-
     public static byte [] unpack(byte [] inp) {
-        return unpack(inp, 0);
-    }
-
-    public static byte [] unpack(byte [] inp, int recommand) {
-        ByteBuffer buf = ByteBuffer.allocate(recommand == 0? inp.length * 2 + inp.length / 2: recommand);
-        int ptr = 0;
+        ByteBuffer buf = ByteBuffer.allocate(inp.length * inp[0]);
+        int ptr = 1;
         int cnt = 0;
         while (ptr < inp.length) {
             byte b = inp[ptr];
