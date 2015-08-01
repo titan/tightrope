@@ -1,0 +1,10 @@
+* erlang 後端實現
+
+還沒有開始呢。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/erlang.scm
+  (define (generate-erlang-entities env dir)
+    '())
+  (define (generate-erlang-serials env dir)
+    '())
+#+end_src

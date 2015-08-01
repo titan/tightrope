@@ -1,0 +1,397 @@
+#+TITLE:     Tightrope
+#+AUTHOR:    Titan
+#+EMAIL:     howay@kachebang.com
+#+DATE:      <2015-08-01 Sat>
+
+Tightrope 受到 sproto 的強力啓發，力圖成爲簡單有效的二進制數據結構編碼器。類似的
+編碼器還有有 protobuffer, capnproto 等。
+
+* Source Protocol
+
+Tightrope 採用類似 Lisp 語言的 s-express 來編寫人類可讀的描述內容。package 和
+struct 分別是兩個頂級元素。struct 定義了所需的數據結構，而 package 定義了 struct
+所在的模塊名稱。所有涉及到命名的地方，都使用這樣的約定：由小寫英文和數字組成，單
+詞之間用橫線連接。支持的基本類型包括：
+
+1. byte
+2. short
+3. int
+4. long
+5. string
+
+數組類型就是在基本類型後面加上 '\*'，比如 'int\*'。浮點類型不支持，用
+fixed-point 數來模擬。自定義類型可以是除了基本類型外，所有合法的名字。
+
+下面是一個來自真實項目的例子：
+
+#+begin_src scheme
+  (package receipt)
+  (struct search-request
+    (byte 0 type)
+    (string 1 station)
+    (int 2 weight)
+    (int 3 price)
+    (int 4 total)
+    (string 5 date)
+    (string 6 no))
+#+end_src
+
+struct 中的每個字段都有一個編號，範圍是 [0, 65535]。不要求連續，但是建議用較小的
+數字。編號會在 struct 版本升級時，發揮巨大的作用。
+
+下面是自定義數據結構和數組的例子：
+
+#+begin_src scheme
+  (struct receipt
+    (string 0 id) ; uuid
+    (string 1 uid) ; uuid
+    (string 2 receipt) ; url
+    (string 3 station)
+    (int 4 weight) ; simulate float
+    (int 5 price) ; simulate float
+    (int 6 total) ; simulate float
+    (string 7 date)
+    (int 8 reward) ; simulate float
+    (byte 9 paid)
+    (string 10 status)
+    (string 11 reason)
+    (string 12 created-at) ; iso8601
+    (string 13 updated-at) ; iso8601
+    (byte 14 type) ; type of receipt
+    (string 15 no) ; number of receipt
+    )
+
+  (struct search-response
+    (receipt* 0 receipts))
+#+end_src
+
+和 Lisp 語言類似，';'後面的是註釋。
+
+* Wire Protocol
+
+所有的數字編碼都是以大端序編碼。打包的單位是一個 struct，每個包分兩個部分：1.字
+段，2. 數據塊。
+
+首先是一個 word n，描述字段的個數，接着有 n 個 word 描述字段的內容。字段的編號從
+0 開始累加，每處理一個字段，把編號加一。如果一個字段 v 爲奇數，則把當前編號加上
+(v - 1) / 2 + 1，並繼續處理下一個字段值。如果一個字段爲零，則表示這個字段引用後
+面的數據塊。如果一個字段是偶數且不爲零，則這個字段的值爲 v / 2 - 1。
+
+接下來是被引用的數據塊。它由一個 dword 長度 + 字節串構成。通常用來表示大於 32767
+的整數和負整數，數組或結構。數組的編碼方式是把同一類型的數據依次打包成數據塊。
+
+* 壓縮算法
+
+由於大量的 short，int，long 字段實際值的二進制編碼會出現大量的零，所以這裏採用
+capnproto 類似的壓縮零方法：
+
+1. 如果被壓縮的數據長度不是 8 的倍數，用 0 補足。
+2. 第一個字節是壓縮前和壓縮後數據包大小的比值取整。如果爲 1，說明壓縮前和壓縮後
+   的大小基本一樣。如果爲 2，則壓縮前的大小是壓縮後大小最多兩倍。
+3. 按 8 個字節一組做壓縮，用一個字節的每個位來表示該字節是否爲0，非零字節依次排
+   列在後面。
+4. 當 8 個字節全部不爲零時，記作 FF，後面再跟上一個字節表明後面還有多少組非零字
+   節組。
+5. 當 8 個字節全部爲零時，記作 00，後面再跟上一個字節表明後面還有多少組全零字節
+   組。
+
+* 代碼實現
+
+** 命令行接口
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/main.scm
+(define (usage prog)
+  (let ((prompt (string-append "Usage: " prog " [option] <source files>\nOptions:\n"))
+        (options '(" -entity        Generate entity code\n"
+                   " -serial        Generate serialize/deserialize code\n"
+                   " -erlang        Generate codes for erlang\n"
+                   " -java          Generate codes for Java\n"
+                   " -d <directory> Specify where to place generated files\n")))
+    (let loop ((opts options)
+               (opts-str ""))
+      (if (null? opts)
+          (display (string-append prompt opts-str))
+          (loop (cdr opts) (string-append opts-str (car opts)))))))
+
+(define (parse-file in)
+  (let loop ((datum (read in))
+             (ast '()))
+    (if (eof-object? datum)
+        (eval (reverse ast) '())
+        (loop (read in) (cons datum ast)))))
+
+(define (read-file filename)
+  (let* ((in (open-input-file filename))
+         (ast (parse-file in)))
+    (close-input-port in)
+    ast))
+
+(define (do-work entity? serial? erlang? java? dir files)
+  (for-each
+   (lambda (f)
+     (let ((env (read-file f)))
+       (if java?
+           (begin
+             (if entity?
+                 (generate-java-entities env dir))
+             (if serial?
+                 (begin
+                   (generate-java-zero-pack env dir)
+                   (generate-java-serials env dir)))))
+       (if erlang?
+           (begin
+             (if entity?
+                 (generate-erlang-entities env dir))
+             (if serial?
+                 (generate-erlang-serials env dir)))))) files))
+
+(define (main argv)
+  (let ((prog (car argv)))
+    (if (< (length argv) 2)
+        (usage prog)
+        (let loop ((args (cdr argv))
+                   (entity #f)
+                   (serial #f)
+                   (erlang #f)
+                   (java #f)
+                   (dir "")
+                   (files '()))
+          (if (null? args)
+              (if (null? files)
+                  (usage prog)
+                  (if (string=? dir "")
+                      (do-work entity serial erlang java dir files)
+                      (let ((last-char (string-ref dir (- (string-length dir) 1))))
+                        (if (file-exists? dir)
+                            (do-work entity serial erlang java (if (not (char=? last-char #\/)) (string-append dir "/") dir) files)
+                            (begin
+                              (mkdir-p dir)
+                              (do-work entity serial erlang java (if (not (char=? last-char #\/)) (string-append dir "/") dir) files))))))
+              (let ((arg (car args)))
+                (cond
+                 ((equal? arg "-entity")
+                  (loop (cdr args) #t serial erlang java dir files))
+                 ((equal? arg "-serial")
+                  (loop (cdr args) entity #t erlang java dir files))
+                 ((equal? arg "-erlang")
+                  (loop (cdr args) entity serial #t java dir files))
+                 ((equal? arg "-java")
+                  (loop (cdr args) entity serial erlang #t dir files))
+                 ((equal? arg "-d")
+                  (if (> (length (cdr args)) 0)
+                      (let ((next (cadr args)))
+                        (if (not (char=? (string-ref next 0) #\-))
+                            (loop (cddr args) entity serial erlang java next files)
+                            (error "main" "output dir not specified")))
+                      (error "main" "output dir not specified")))
+                 ((not (char=? (string-ref arg 0) #\-))
+                  (loop (cdr args) entity serial erlang java dir (cons arg files)))
+                 (else
+                  (loop (cdr args) entity serial erlang java dir files)))))))))
+
+#+end_src
+** 核心代碼
+
+核心代碼包括這麼幾個部分：
+
+1. 源碼執行函數
+2. package 相關函數
+3. struct 相關函數
+4. field 相關函數
+5. 字段類型相關函數
+6. 常用輔助函數
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/core.scm
+  <<utility>>
+  <<package>>
+  <<struct>>
+  <<field>>
+  <<type>>
+  <<eval>>
+#+end_src
+
+*** 源碼執行
+#+begin_src scheme :noweb-ref eval
+  (define (eval-primitive type tag field)
+    (let ((name (symbol->string (car field)))
+          (rest (cdr field)))
+      (list->vector (cons name (cons tag (cons type rest))))))
+
+  (define (eval-array type tag field)
+    (let ((name (symbol->string (car field)))
+          (rest (cdr field)))
+      (list->vector (cons name (cons tag (cons type rest))))))
+
+  (define (eval-custom type tag field)
+    (let ((name (symbol->string (car field)))
+          (rest (cdr field)))
+      (list->vector (cons name (cons tag (cons type rest))))))
+
+  (define (eval-struct name exps)
+    (let loop ((es exps)
+               (fields '()))
+      (if (null? es)
+          (cons name (qsort fields (lambda (x y) (cond ((< (field-tag x) (field-tag y)) -1) ((> (field-tag x) (field-tag y)) 1) (else 0)))))
+          (let* ((field (car es))
+                 (type (car field))
+                 (tag (cadr field))
+                 (rest (cddr field)))
+            (cond
+             ((eq? type 'byte) (loop (cdr es) (cons (eval-primitive type tag rest) fields)))
+             ((eq? type 'short) (loop (cdr es) (cons (eval-primitive type tag rest) fields)))
+             ((eq? type 'int) (loop (cdr es) (cons (eval-primitive type tag rest) fields)))
+             ((eq? type 'long) (loop (cdr es) (cons (eval-primitive type tag rest) fields)))
+             ((eq? type 'string) (loop (cdr es) (cons (eval-primitive type tag rest) fields)))
+             ((eq? type 'byte*) (loop (cdr es) (cons (eval-array type tag rest) fields)))
+             ((eq? type 'short*) (loop (cdr es) (cons (eval-array type tag rest) fields)))
+             ((eq? type 'int*) (loop (cdr es) (cons (eval-array type tag rest) fields)))
+             ((eq? type 'long*) (loop (cdr es) (cons (eval-array type tag rest) fields)))
+             ((eq? type 'string*) (loop (cdr es) (cons (eval-array type tag rest) fields)))
+             (else (loop (cdr es) (cons (eval-custom type tag rest) fields))))))))
+
+  (define (eval-exp e)
+    (cond
+     ((eq? (car e) 'package) (cons "package" (symbol->string (cadr e))))
+     ((eq? (car e) 'struct) (eval-struct (symbol->string (cadr e)) (cddr e)))
+     (else (error "eval-exp" "unknown express" e))))
+
+  (define (eval ast env)
+    (let loop ((as ast)
+               (env env))
+      (if (null? as)
+          env
+          (loop (cdr as) (cons (eval-exp (car as)) env)))))
+#+end_src
+*** package 相關函數
+
+#+begin_src scheme :noweb-ref package
+  (define (get-package env)
+    (let ((p (assoc "package" env)))
+      (if p
+          (if (= (string-length (cdr p)) 0)
+              #f
+              (cdr p))
+          #f)))
+#+end_src
+
+*** struct 相關函數
+
+#+begin_src scheme :noweb-ref struct
+  (define (get-structs env)
+    (filter (lambda (x) (not (equal? "package" (car x)))) env))
+
+  (define (get-struct env name)
+    (assoc name env))
+
+  (define (struct-name struct)
+    (car struct))
+
+  (define (struct-fields struct)
+    (cdr struct))
+#+end_src
+
+*** field 相關函數
+
+#+begin_src scheme :noweb-ref field
+  (define (string-field-count fields)
+    (length (filter (lambda (x) (eq? 'string (field-type x))) fields)))
+
+  (define (string-array-count fields)
+    (length (filter (lambda (x) (string-array-type? (field-type x))) fields)))
+
+  (define (custom-field-count fields)
+    (length (filter (lambda (x) (custom-type? (field-type x))) fields)))
+
+  (define (custom-array-count fields)
+    (length (filter (lambda (x) (custom-array-type? (field-type x))) fields)))
+
+  (define (field-name field)
+    (vector-ref field 0))
+
+  (define (field-tag field)
+    (vector-ref field 1))
+
+  (define (field-type field)
+    (vector-ref field 2))
+
+#+end_src
+
+*** 類型相關函數
+
+#+begin_src scheme :noweb-ref type
+  (define (custom-type? type)
+    (if (array-type? type)
+        #f
+        (case type
+          ((byte short int long string) #f)
+          (else #t))))
+
+  (define (array-type? type)
+    (let* ((typestr (symbol->string type))
+           (len (string-length typestr)))
+      (char=? #\* (string-ref typestr (- len 1)))))
+
+  (define (custom-array-type? type)
+    (if (array-type? type)
+        (let ((base-type (array-base-type type)))
+          (custom-type? base-type))
+        #f))
+
+  (define (string-array-type? type)
+    (if (array-type? type)
+        (let ((base-type (array-base-type type)))
+          (eq? base-type 'string))
+        #f))
+
+  (define (array-base-type type)
+    (if (array-type? type)
+        (let* ((typestr (symbol->string type))
+               (len (string-length typestr)))
+          (string->symbol (substring typestr 0 (- len 1))))
+        type))
+#+end_src
+
+*** 常用輔助函數
+#+begin_src scheme :noweb-ref utility
+  (define (reduce acc-fun init items)
+    (let loop ((is items)
+               (r init))
+      (if (null? is)
+          r
+          (loop (cdr is) (acc-fun r (car is))))))
+
+  (define (filter cond-fun items)
+    (let loop ((is items)
+               (r '()))
+      (if (null? is)
+          r
+          (loop (cdr is) (if (cond-fun (car is)) (cons (car is) r) r)))))
+
+  (define (qsort lst comparator)
+    (if (null? lst)
+        '()
+        (let ((x (car lst)))
+          (append (qsort (filter (lambda (y) (< (comparator y x) 0)) lst) comparator) (list x) (qsort (filter (lambda (y) (> (comparator y x) 0)) lst) comparator)))))
+
+  (define (mkdir-p dir)
+    (let loop ((rest (string->list dir))
+               (dir? #f)
+               (dst '()))
+      (if (null? rest)
+          (mkdir (list->string (reverse dst)))
+          (if dir?
+              (let ((d (list->string (reverse dst))))
+                (if (not (file-exists? d))
+                    (mkdir d))
+                (loop rest #f dst))
+              (if (char=? (car rest) (directory-separator))
+                  (loop (cdr rest) #t (cons (car rest) dst))
+                  (loop (cdr rest) #f (cons (car rest) dst)))))))
+
+  ;; [str0 str1 ...] -> str
+  (define (strcat strs)
+    (reduce (lambda (a x) (string-append a x)) "" strs))
+
+  (define (write-string str)
+    (for-each (lambda (x) (write-char x)) (string->list str)))
+
+#+end_src
