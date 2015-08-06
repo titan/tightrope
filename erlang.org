@@ -8,3 +8,217 @@
   (define (generate-erlang-serials env dir)
     '())
 #+end_src
+
+*** 壓縮和解壓
+Tightrope 會在生成壓縮和解壓的 Erlang 代碼。
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/erlang.scm
+  (define (generate-erlang-zero-pack env dir)
+    (let ((path dir)
+          (src "-module(zeropack).
+
+  -export([pack/1, unpack/1]).
+
+  -spec pack(binary()) -> binary().
+
+  pack(X) when is_binary(X) ->
+      Size = size(X),
+      Rem = Size rem 8,
+      Tmp = if
+                Rem /= 0 ->
+                    R = Size rem 8,
+                    Padding = binary:copy(<<0>>, 8 - R),
+                    pack(<<X/binary, Padding/binary>>, <<>>, 0, <<>>, 0);
+                true ->
+                    pack(X, <<>>, 0, <<>>, 0)
+            end,
+      TmpSize = size(Tmp),
+      if
+          Size rem TmpSize > 0 ->
+              <<((Size div TmpSize) + 1):8, Tmp/binary>>;
+          true ->
+              <<(Size div TmpSize):8, Tmp/binary>>
+      end.
+
+  -spec pack(binary(), binary(), non_neg_integer(), binary(), non_neg_integer()) -> binary().
+
+  pack(Src, Dst, FFCnt, FFBuf, OOCnt) ->
+      if
+          size(Src) == 0 ->
+              if
+                  FFCnt > 0 ->
+                      <<Dst/binary, 16#FF, FFCnt:8, FFBuf/binary>>;
+                  OOCnt > 0 ->
+                      <<Dst/binary, 0, OOCnt:8>>;
+                  true ->
+                      Dst
+              end;
+          true ->
+              <<Group:8/binary, Rest/binary>> = Src,
+              Bitmap = calc_bitmap(Group),
+              case Bitmap of
+                  0 ->
+                      Tmp = if
+                                FFCnt > 0 ->
+                                    <<16#FF:8, FFCnt:8, FFBuf/binary>>;
+                                true ->
+                                    <<>>
+                            end,
+                      if
+                          OOCnt == 0 ->
+                              pack(Rest, <<Dst/binary, Tmp/binary>>, 0, <<>>, 1);
+                          OOCnt == 16#FF ->
+                              pack(Rest, <<Dst/binary, Tmp/binary, 0, OOCnt:8>>, 0, <<>>, 1);
+                          true ->
+                              pack(Rest, <<Dst/binary, Tmp/binary>>, 0, <<>>, OOCnt + 1)
+                      end;
+                  16#FF ->
+                      Tmp = if
+                                OOCnt > 0 ->
+                                    <<0, OOCnt:8>>;
+                                true ->
+                                    <<>>
+                            end,
+                      if
+                          FFCnt == 0 ->
+                              pack(Rest, <<Dst/binary, Tmp/binary>>, 1, <<Group/binary>>, 0);
+                          FFCnt == 16#FF ->
+                              pack(Rest, <<Dst/binary, Tmp/binary, 16#FF, FFCnt:8, FFBuf/binary>>, 1, <<Group/binary>>, 0);
+                          true ->
+                              pack(Rest, <<Dst/binary, Tmp/binary>>, FFCnt + 1, <<FFBuf/binary, Group/binary>>, 0)
+                      end;
+                  _ ->
+                      Zipped = zip(Group),
+                      if
+                          FFCnt > 0 ->
+                              pack(Rest, <<Dst/binary, 16#FF, FFCnt:8, FFBuf/binary, Bitmap:8, Zipped/binary>>, 0, <<>>, OOCnt);
+                          OOCnt > 0 ->
+                              pack(Rest, <<Dst/binary, 0, OOCnt:8, Bitmap:8, Zipped/binary>>, FFCnt, FFBuf, 0);
+                          true ->
+                              pack(Rest, <<Dst/binary, Bitmap:8, Zipped/binary>>, FFCnt, FFBuf, OOCnt)
+                      end
+              end
+      end.
+
+  -spec calc_bitmap(binary()) -> non_neg_integer().
+
+  calc_bitmap(X) ->
+      calc_bitmap(binary_to_list(X), 0).
+
+  -spec calc_bitmap([byte()], non_neg_integer()) -> non_neg_integer().
+
+  calc_bitmap(X, Bitmap) ->
+      Length = length(X),
+      if
+          Length == 0 ->
+              Bitmap;
+          true ->
+              if
+                  hd(X) /= 0 ->
+                      calc_bitmap(tl(X), Bitmap bor (1 bsl (Length - 1)));
+                  true ->
+                      calc_bitmap(tl(X), Bitmap)
+              end
+      end.
+
+  -spec zip(binary()) -> binary().
+
+  zip(X) ->
+      zip(binary_to_list(X), <<>>).
+
+  -spec zip([byte()], binary()) -> binary().
+
+  zip(X, Acc) ->
+      if
+          length(X) == 0 ->
+              Acc;
+          true ->
+              Head = hd(X),
+              if
+                  Head == 0 ->
+                      zip(tl(X), Acc);
+                  true ->
+                      zip(tl(X), <<Acc/binary, Head:8>>)
+              end
+      end.
+
+  -spec unpack(binary()) -> binary().
+
+  unpack(X) when is_binary(X) ->
+      <<_:8, Buffer/binary>> = X,
+      unpack(Buffer, <<>>).
+
+  -spec unpack(binary(), binary()) -> binary().
+
+  unpack(Src, Dst) ->
+      if
+          size(Src) == 0 ->
+              Dst;
+          true ->
+              <<Head:8, Rest/binary>> = Src,
+              case Head of
+                  0 ->
+                      <<Cnt:8, R/binary>> = Rest,
+                      Padding = binary:copy(<<0,0,0,0,0,0,0,0>>, Cnt),
+                      unpack(R, <<Dst/binary, Padding/binary>>);
+                  16#FF ->
+                      <<Cnt:8, RR/binary>> = Rest,
+                      Length = Cnt * 8,
+                      <<Data:Length/binary, R/binary>> = RR,
+                      unpack(R, <<Dst/binary, Data/binary>>);
+                  _ ->
+                      Cnt = calc_bitmap_count(Head),
+                      <<Data:Cnt/binary, R/binary>> = Rest,
+                      Expanded = expand_bitmap(Head, Data),
+                      unpack(R, <<Dst/binary, Expanded/binary>>)
+              end
+      end.
+
+  -spec calc_bitmap_count(byte()) -> non_neg_integer().
+
+  calc_bitmap_count(X) ->
+      calc_bitmap_count(X, 8, 0).
+
+  -spec calc_bitmap_count(byte(), non_neg_integer(), non_neg_integer()) -> non_neg_integer().
+
+  calc_bitmap_count(X, Loop, Acc) ->
+      if
+          Loop == 0 ->
+              Acc;
+          true ->
+              if
+                  X band (1 bsl (Loop - 1)) > 0 ->
+                      calc_bitmap_count(X, Loop - 1, Acc + 1);
+                  true ->
+                      calc_bitmap_count(X, Loop - 1, Acc)
+              end
+      end.
+
+  -spec expand_bitmap(byte(), binary()) -> binary().
+
+  expand_bitmap(X, Data) ->
+      expand_bitmap(X, binary_to_list(Data), 8, <<>>).
+
+  -spec expand_bitmap(byte(), [byte()], non_neg_integer(), binary()) -> binary().
+
+  expand_bitmap(X, Data, Loop, Dest) ->
+      if
+          Loop == 0 ->
+              Dest;
+          true ->
+              if
+                  X band (1 bsl (Loop - 1)) > 0 ->
+                      Byte = hd(Data),
+                      expand_bitmap(X, tl(Data), Loop - 1, <<Dest/binary, Byte:8>>);
+                  true ->
+                      expand_bitmap(X, Data, Loop - 1, <<Dest/binary, 0>>)
+              end
+      end.
+  "))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (with-output-to-file
+          (string-append path "zeropack.erl")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+#+end_src
