@@ -304,6 +304,9 @@ capnproto 類似的壓縮零方法：
   (define (custom-array-count fields)
     (length (filter (lambda (x) (custom-array-type? (field-type x))) fields)))
 
+  (define (primitive-fields fields)
+    (filter (lambda (x) (primitive-type? (field-type x))) fields))
+
   (define (field-name field)
     (vector-ref field 0))
 
@@ -341,6 +344,11 @@ capnproto 類似的壓縮零方法：
         (let ((base-type (array-base-type type)))
           (eq? base-type 'string))
         #f))
+
+  (define (primitive-type? type)
+    (if (array-type? type)
+        #f
+        (not (or (eq? type 'string) (custom-type? type)))))
 
   (define (array-base-type type)
     (if (array-type? type)
@@ -393,5 +401,22 @@ capnproto 類似的壓縮零方法：
 
   (define (write-string str)
     (for-each (lambda (x) (write-char x)) (string->list str)))
+
+  (define (indent x)
+    (make-string x #\ ))
+
+  (define (indent+ a . b)
+    (let loop ((s a)
+               (i b))
+      (if (null? i)
+          (indent s)
+          (loop (+ s (car i)) (cdr i)))))
+
+  (define (indent-line i a . b)
+    (let loop ((s a)
+               (r b))
+      (if (null? r)
+          (string-append (indent i) s "\n")
+          (loop (string-append s (car r)) (cdr r)))))
 
 #+end_src

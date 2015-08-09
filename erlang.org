@@ -1,17 +1,536 @@
 * erlang 後端實現
 
-還沒有開始呢。
+正在進行中。
+
+*** 實體對象
+Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現中，用 record 來實
+現數據結構。實體對象的定義保存在對應的 hrl 文件中，方便各個模塊調用。
 
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/erlang.scm
+  <<utility>>
+
+  (define (generate-erlang-include field)
+    (if (custom-type? (field-type field))
+        (string-append "-include(\"" (>erlang-name (symbol->string (field-type field))) ".hrl\").\n")
+        ""))
+
+  (define (generate-erlang-field-declare field)
+    (let ((name (>erlang-name (field-name field)))
+          (type (field-type field)))
+      (if (array-type? type)
+          (let ((base-type (array-base-type type)))
+            (cond
+             ((custom-type? base-type) (string-append name "::[#" (>erlang-module-name (symbol->string base-type)) "{}],"))
+             (else (string-append name "::[" (>erlang-type type) "],"))))
+          (cond
+           ((custom-type? type) (string-append name "::#" (>erlang-module-name (symbol->string type)) "{},"))
+           (else (string-append name "::" (>erlang-type type) ","))))))
+
+  (define (generate-erlang-entity struct dir)
+    (let ((name (struct-name struct))
+          (fields (struct-fields struct)))
+      (let ((includes (strcat (map generate-erlang-include fields)))
+            (record-start "-record(")
+            (record-stop ").")
+            (record-name (>erlang-module-name name))
+            (field-decls (strcat (map generate-erlang-field-declare fields))))
+        (with-output-to-file
+            (string-append dir (>erlang-module-name name) ".hrl")
+          (lambda ()
+            (write-string (string-append includes record-start record-name ", {" (substring field-decls 0 (- (string-length field-decls) 1)) "}" record-stop)))
+          (list 'replace)))))
+
   (define (generate-erlang-entities env dir)
-    '())
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (for-each
+       (lambda (entity) (generate-erlang-entity entity path))
+       (get-structs env))))
+#+end_src
+
+*** 序列化與反序列化
+
+**** 編碼器
+
+編碼器分爲三個主要步驟：
+1. 分析對象屬性，沒有設置的屬性，或者默認值爲 0 的屬性被跳過，同時轉換 string,
+   數組，自定義結構爲二進制表達；
+2. 設置非對象屬性的值；
+3. 設置對象(包括字符串)屬性的二進制數據。
+
+#+begin_src scheme :exports code :noweb no :tangle /dev/shm/tightrope-build/erlang.scm
+  (define (generate-erlang-record-match name fields)
+    (let loop ((fs fields)
+               (attrs '()))
+      (if (null? fs)
+          (if (null? attrs)
+              ""
+              (let ((attrs-string (strcat (reverse attrs))))
+                (string-append "#" name "{" (substring attrs-string 0 (- (string-length attrs-string) 2)) "}")))
+          (loop (cdr fs) (cons (string-append (>erlang-name (field-name (car fs))) " = " (>erlang-var-name (field-name (car fs))) ", ") attrs)))))
+
+  (define (generate-erlang-object-array-to-binary-recursive field)
+    (let ((type (>erlang-name (symbol->string (array-base-type (field-type field))))))
+      (let ((spec (string-append "-spec " type "_array_to_binary([#" type "{}]) -> binary().\n"))
+            (sign (string-append type "_array_to_binary(X) ->\n"))
+            (body (indent-line 4 type "_array_to_binary(X, <<>>)."))
+            (spec-recr (string-append "-spec " type "_array_to_binary([#" type "{}], binary()) -> binary().\n"))
+            (sign-recr (string-append type "_array_to_binary(X, Acc) ->\n"))
+            (body-recr (string-append
+                        (indent-line 4 "if")
+                        (indent-line 8 "length(X) == 0 ->")
+                        (indent-line 12 "Acc;")
+                        (indent-line 8 "true ->")
+                        (indent-line 12 (>erlang-var-name type) " = hd(X),")
+                        (indent-line 12 "Bin = " type ":encode(" (>erlang-var-name type) "),")
+                        (indent-line 12 "Size = size(Bin),")
+                        (indent-line 12 type "_array_to_binary(tl(X), <<Acc/binary, Size:32, Bin/binary>>)")
+                        (indent-line 4 "end."))))
+        (string-append spec sign body spec-recr sign-recr body-recr))))
+
+  (define (generate-erlang-object-array-to-binary struct)
+    (let ((name (struct-name struct))
+          (fields (filter (lambda (x) (let ((type (field-type x))) (and (array-type? type) (custom-type? (array-base-type type))))) (struct-fields struct))))
+      (strcat (map generate-erlang-object-array-to-binary-recursive fields))))
+
+  (define (generate-erlang-analyzer-field sname field base-indent)
+    (let ((tag (number->string (field-tag field)))
+          (fname (field-name field))
+          (type (field-type field)))
+      (let ((accessor (generate-erlang-record-accessor sname fname)))
+        (if (array-type? type)
+            (let ((base-type (array-base-type type)))
+              (cond
+               ((eq? base-type 'byte)
+                (string-append
+                 (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
+                 (indent-line (+ base-indent 4) "ObjBin = list_to_binary(" accessor "),")
+                 (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [ObjBin | ObjBins]});")))
+               ((eq? base-type 'short)
+                (string-append
+                 (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
+                 (indent-line (+ base-indent 4) "ObjBin = tightrope:short_array_to_binary(" accessor "),")
+                 (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [ObjBin | ObjBins]});")))
+               ((eq? base-type 'int)
+                (string-append
+                 (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
+                 (indent-line (+ base-indent 4) "ObjBin = tightrope:int_array_to_binary(" accessor "),")
+                 (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [ObjBin | ObjBins]});")))
+               ((eq? base-type 'long)
+                (string-append
+                 (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
+                 (indent-line (+ base-indent 4) "ObjBin = tightrope:long_array_to_binary(" accessor "),")
+                 (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [ObjBin | ObjBins]});")))
+               ((eq? base-type 'string)
+                (string-append
+                 (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
+                 (indent-line (+ base-indent 4) "ObjBin = tightrope:string_array_to_binary(" accessor "),")
+                 (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [ObjBin | ObjBins]});")))
+               ((custom-type? base-type)
+                (string-append
+                 (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
+                 (indent-line (+ base-indent 4) "ObjBin = " (>erlang-name (symbol->string base-type)) "_array_to_binary(" accessor "),")
+                 (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [ObjBin | ObjBins]});")))
+               (else
+                (string-append
+                 (indent-line base-indent "Tag == " tag " ->")
+                 (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), Env);")))))
+            (cond
+             ((eq? type 'string)
+              (string-append
+               (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
+               (indent-line (+ base-indent 4) "StrBin = unicode:characters_to_binary(" accessor "),")
+               (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [StrBin | ObjBins]});")))
+             ((custom-type? type)
+              (string-append
+               (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
+               (indent-line (+ base-indent 4) "ObjBin = " (>erlang-module-name (symbol->string type)) ":encode(" accessor "),")
+               (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [ObjBin | ObjBins]});")))
+             ((eq? type 'byte)
+              (string-append
+               (indent-line base-indent "Tag == " tag ", " accessor " /= 0 ->")
+               (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), Env#env{count = Count + 1, tags = [" tag " | Tags]});")))
+             (else
+              (string-append
+               (indent-line base-indent "Tag == " tag ", " accessor " /= 0 ->")
+               (indent-line (+ base-indent 4) "if")
+               (indent-line (+ base-indent 8) "-16384 < " accessor ", " accessor " < 16383 ->")
+               (indent-line (+ base-indent 12) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), Env#env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags]});")
+               (indent-line (+ base-indent 8) " true ->")
+               (indent-line (+ base-indent 12) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), Env#env{count = Count + 1, tags = [" tag " | Tags]})")
+               (indent-line (+ base-indent 4) "end;"))))))))
+
+  (define (generate-erlang-analyzer-recursive struct)
+    (let ((name (>erlang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((spec (indent-line 0 "-spec analyzer(#" name "{}, [non_neg_integer()], #env{}) -> #env{}."))
+            (sign (indent-line 0 "analyzer(" (>erlang-var-name name) ", CheckTags, Env) ->"))
+            (body (string-append
+                   (indent-line 4 "#env{count = Count, tags = Tags, dtags = DTags, objbins = ObjBins} = Env,")
+                   (indent-line 4 "if")
+                   (indent-line 8 "length(CheckTags) == 0 ->")
+                   (indent-line 12 "Env#env{tags = lists:reverse(Tags), dtags = lists:reverse(DTags), objbins = lists:reverse(ObjBins)};")
+                   (indent-line 8 "true ->")
+                   (indent-line 12 "Tag = hd(CheckTags),")
+                   (indent-line 12 "if")
+                   (strcat (map (lambda (x) (generate-erlang-analyzer-field name x 16)) fields))
+                   (indent-line 16 "true ->")
+                   (indent-line 20 "analyzer(" (>erlang-var-name name) ", tl(CheckTags), Env)")
+                   (indent-line 12 "end")
+                   (indent-line 4 "end."))))
+        (string-append spec sign body))))
+
+  (define (generate-erlang-analyzer struct)
+    (let ((name (>erlang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let* ((spec (indent-line 0 "-spec analyzer(#" name "{}) -> #env{}."))
+             (tags (strcat (map (lambda(x) (string-append (number->string (field-tag x)) ", ")) fields)))
+             (body (string-append
+                    (indent-line 0 "analyzer(" (>erlang-var-name name) ") ->")
+                    (indent-line 4 "analyzer(" (>erlang-var-name name) ", [" (if (> (string-length tags) 1) (substring tags 0 (- (string-length tags) 2)) "") "], #env{count = 0, tags = [], dtags = [], objbins = []}).")))
+             (recr (generate-erlang-analyzer-recursive struct)))
+        (string-append spec body recr))))
+
+  (define (generate-erlang-set-field sname field base-indent)
+    (let ((fname (>erlang-name (field-name field)))
+          (type (field-type field))
+          (tag (number->string (field-tag field))))
+      (string-append
+       (indent-line base-indent tag " ->")
+       (if (primitive-type? type)
+           (let ((vname (>erlang-var-name fname)))
+             (string-append
+              (indent-line (+ base-indent 4) "if")
+              (indent-line (+ base-indent 8) "-16384 < " vname ", " vname " < 16383 ->")
+              (indent-line (+ base-indent 12) "set_fields(<<Tmp/binary, ((" vname " + 1) * 2):16>>, X, tl(Tags), Tag);")
+              (indent-line (+ base-indent 8) "true ->")
+              (indent-line (+ base-indent 12) "set_fields(<<Tmp/binary, 0:16>>, X, tl(Tags), Tag)")
+              (indent-line (+ base-indent 4) "end;")))
+           (indent-line (+ base-indent 4) "set_fields(<<Tmp/binary, 0:16>>, X, tl(Tags), Tag);")))))
+
+  (define (generate-erlang-set-fields-recursive struct)
+    (let ((name (>erlang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let* ((spec (string-append "-spec set_fields(binary(), #" name "{}, [non_neg_integer()], integer()) -> binary().\n"))
+             (sign "set_fields(Buf, X, Tags, LastTag) ->\n")
+             (action (strcat (map (lambda(x) (generate-erlang-set-field name x 16)) fields)))
+             (body (string-append
+                    (indent-line 04 "Length = length(Tags),")
+                    (indent-line 04 "if")
+                    (indent-line 08 "Length == 0 ->")
+                    (indent-line 12 "Buf;")
+                    (indent-line 08 "true ->")
+                    (indent-line 12 (string-append (generate-erlang-record-match name (primitive-fields fields)) " = X,"))
+                    (indent-line 12 "Tag = hd(Tags),")
+                    (indent-line 12 "Tmp = if")
+                    (indent-line 22 "LastTag + 1 /= Tag ->")
+                    (indent-line 26 "T = (Tag - LastTag - 1) * 2 + 1,")
+                    (indent-line 26 "<<Buf/binary, T:16>>;")
+                    (indent-line 22 "true ->")
+                    (indent-line 26 "Buf")
+                    (indent-line 18 "end,")
+                    (indent-line 12 "case Tag of")
+                    (substring action 0 (- (string-length action) 2))
+                    (indent-line 12 "end")
+                    (indent-line 4 "end."))))
+        (string-append spec sign body))))
+
+  (define (generate-erlang-set-fields struct)
+    (let ((name (>erlang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((spec (string-append "-spec set_fields(binary(), #" name "{}, #env{}) -> binary().\n"))
+            ;(tags (strcat (map (lambda(x) (string-append (number->string (field-tag x)) ", ")) fields)))
+            (sign "set_fields(Buf, X, Env) ->\n")
+            (body (if (and (= (length fields) 1) (= (field-tag (car fields)) 0))
+                      (string-append
+                       (indent-line 4 "#env{tags = Tags} = Env,")
+                       (indent-line 4 "set_fields(Buf, X, Tags, -1)."))
+                      (string-append
+                       (indent-line 4 "#env{tags = Tags} = Env,")
+                       (indent-line 4 "Tag0 = hd(Tags),")
+                       (indent-line 4 "if")
+                       (indent-line 8 "Tag0 /= 0 ->")
+                       (indent-line 12 "set_fields(<<Buf/binary, (Tag0 * 2 + 1):16>>, X, Tags, 0);")
+                       (indent-line 8 "true ->")
+                       (indent-line 12 "set_fields(Buf, X, Tags, -1)")
+                       (indent-line 4 "end."))))
+            (recr (generate-erlang-set-fields-recursive struct)))
+        (string-append spec sign body recr))))
+
+  (define (generate-erlang-set-data-action name field base-indent)
+    (let ((fname (>erlang-name (field-name field)))
+          (vname (>erlang-var-name (field-name field)))
+          (type (field-type field))
+          (tag (number->string (field-tag field))))
+      (string-append
+       (indent-line base-indent tag " ->")
+       (if (array-type? type)
+           (string-append
+            (indent-line (+ base-indent 4) "ObjBin = hd(ObjBins),")
+            (indent-line (+ base-indent 4) "Size = size(ObjBin),")
+            (indent-line (+ base-indent 4) "set_data(<<Buf/binary, Size:32, ObjBin/binary>>, X, tl(DTags), tl(ObjBins));"))
+           (cond
+            ((eq? type 'short)
+             (string-append
+              (indent-line (+ base-indent 4) (generate-erlang-record-match name (list field)) " = X,")
+              (indent-line (+ base-indent 4) "set_data(<<Buf/binary, 2:32, " vname ":16>>, X, tl(DTags), ObjBins);")))
+            ((eq? type 'int)
+             (string-append
+              (indent-line (+ base-indent 4) (generate-erlang-record-match name (list field)) " = X,")
+              (indent-line (+ base-indent 4) "set_data(<<Buf/binary, 4:32, " vname ":32>>, X, tl(DTags), ObjBins);")))
+            ((eq? type 'long)
+             (string-append
+              (indent-line (+ base-indent 4) (generate-erlang-record-match name (list field)) " = X,")
+              (indent-line (+ base-indent 4) "set_data(<<Buf/binary, 8:32, " vname ":64>>, X, tl(DTags), ObjBins);")))
+            ((eq? type 'string)
+             (string-append
+              (indent-line (+ base-indent 4) "StrBin = hd(ObjBins),")
+              (indent-line (+ base-indent 4) "Size = size(StrBin),")
+              (indent-line (+ base-indent 4) "set_data(<<Buf/binary, Size:32, StrBin/binary>>, X, tl(DTags), tl(ObjBins));")))
+            ((custom-type? type)
+             (string-append
+              (indent-line (+ base-indent 4) "ObjBin = hd(ObjBins),")
+              (indent-line (+ base-indent 4) "Size = size(ObjBin),")
+              (indent-line (+ base-indent 4) "set_data(<<Buf/binary, Size:32, ObjBin/binary>>, X, tl(DTags), tl(ObjBins));")))
+            (else (indent-line (+ base-indent 4) "set_data(Buf, X, tl(DTags), tl(ObjBins));")))))))
+
+  (define (generate-erlang-set-data-recursive struct)
+    (let ((name (>erlang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let* ((spec (indent-line 0 "-spec set_data(binary(), #" name "{}, [non_neg_integer()], [binary()]) -> binary()."))
+             (sign "set_data(Buf, X, DTags, ObjBins) ->\n")
+             (action (strcat (map (lambda(x) (generate-erlang-set-data-action name x 16)) (filter (lambda (x) (not (eq? 'byte (field-type x)))) fields))))
+             (body (string-append
+                    (indent-line 04 "Length = length(DTags),")
+                    (indent-line 04 "if")
+                    (indent-line 08 "Length == 0 ->")
+                    (indent-line 12 "Buf;")
+                    (indent-line 08 "true ->")
+                    (indent-line 12 "Tag = hd(DTags),")
+                    (indent-line 12 "case Tag of")
+                    (substring action 0 (- (string-length action) 2))
+                    (indent-line 12 "end")
+                    (indent-line 4 "end."))))
+        (string-append spec sign body))))
+
+  (define (generate-erlang-set-data struct)
+    (let ((name (>erlang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((spec (indent-line 0 "-spec set_data(binary(), #" name "{}, #env{}) -> binary()."))
+            (sign (indent-line 0 "set_data(Buf, X, #env{dtags = DTags, objbins = ObjBins}) ->"))
+            (body (indent-line 4 "set_data(Buf, X, DTags, ObjBins)."))
+            (recr (generate-erlang-set-data-recursive struct)))
+        (string-append spec sign body recr))))
+
+  (define (generate-erlang-encoder struct)
+    (let* ((name (>erlang-name (struct-name struct)))
+           (fields (struct-fields struct))
+           (none-byte-type-count (length (filter (lambda (x) (not (eq? 'byte (field-type x)))) fields))))
+      (let ((object-array-to-binary (generate-erlang-object-array-to-binary struct))
+            (analyzer (generate-erlang-analyzer struct))
+            (set-fields (generate-erlang-set-fields struct))
+            (set-data (if (> none-byte-type-count 0) (generate-erlang-set-data struct) ""))
+            (spec (string-append "-spec encode(#" name "{}) -> binary().\n"))
+            (sign "encode(X) ->\n")
+            (body (string-append
+                   (indent-line 4 "Env = analyzer(X),")
+                   (indent-line 4 "Count0 = tightrope:adjust_count_for_tag_0(Env),")
+                   (indent-line 4 "Count1 = tightrope:adjust_count_for_missed_tags(Env#env{count = Count0}),")
+                   (indent-line 4 "NewEnv = Env#env{count = Count1},")
+                   (if (> none-byte-type-count 0)
+                       (string-append
+                        (indent-line 4 "Buf = set_fields(<<Count0:16>>, X, NewEnv),")
+                        (indent-line 4 "set_data(Buf, X, NewEnv)."))
+                       (indent-line 4 "set_fields(<<Count0:16>>, X, NewEnv).")))))
+        (string-append object-array-to-binary analyzer set-fields set-data spec sign body))))
+
+  (define (generate-erlang-encoder-zero-pack struct)
+    (let ((name (>erlang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((spec (string-append "-spec encode0pack(#" name "{}) -> binary().\n"))
+            (sign "encode0pack(X) ->\n")
+            (body (indent-line 4 "zeropack:pack(encode(X)).")))
+        (string-append spec sign body))))
+#+end_src
+
+**** 解碼器
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/erlang.scm
+  (define (generate-erlang-decoder struct)
+    (let ((name (>erlang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((spec (string-append "-spec decode(binary()) -> #" name "{}.\n"))
+            (sign "decode(X) ->\n")
+            (body (indent-line 4 "#" name "{}.")))
+        (string-append spec sign body))))
+
+  (define (generate-erlang-decoder-zero-pack struct)
+    (let ((name (>erlang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((spec (string-append "-spec decode0pack(binary()) -> #" name "{}.\n"))
+            (sign "decode0pack(X) ->\n")
+            (body (indent-line 4 "decode(zeropack:unpack(X)).")))
+        (string-append spec sign body))))
+#+end_src
+
+**** 主體
+
+序列化和反序列化的代碼都放置在對應的 erl 文件中。一些運行時的輔助函數放置在
+tightrope.erl 和 tightrope.hrl 文件中。
+
+#+begin_src scheme :exports code :noweb no :tangle /dev/shm/tightrope-build/erlang.scm
+  (define (generate-erlang-tightrope-runtime dir)
+    (with-output-to-file
+        (string-append dir "tightrope.hrl")
+      (lambda ()
+        (write-string "-record(env, {count :: non_neg_integer(), tags :: [non_neg_integer()], dtags :: [non_neg_integer()], objbins :: [binary()]})."))
+      (list 'replace))
+    (with-output-to-file
+        (string-append dir "tightrope.erl")
+      (lambda ()
+        (write-string "-module(tightrope).
+
+  -export([adjust_count_for_tag_0/1, adjust_count_for_missed_tags/1, short_array_to_binary/1, int_array_to_binary/1, long_array_to_binary/1, string_array_to_binary/1]).
+
+  -include(\"tightrope.hrl\").
+
+  -spec adjust_count_for_tag_0(#env{}) -> non_neg_integer().
+
+  adjust_count_for_tag_0(#env{count = Count, tags = Tags}) ->
+      if
+          Count /= 0, hd(Tags) /= 0 ->
+              Count + 1;
+          true ->
+              Count
+      end.
+
+  -spec adjust_count_for_missed_tags(#env{}) -> non_neg_integer().
+
+  adjust_count_for_missed_tags(#env{count = Count, tags = Tags}) ->
+      if length(Tags) == 1 ->
+              Count;
+         true ->
+              adjust_count_for_missed_tags(length(Tags), Tags, Count)
+      end.
+
+  -spec adjust_count_for_missed_tags(non_neg_integer(), [non_neg_integer()], non_neg_integer()) -> non_neg_integer().
+
+  adjust_count_for_missed_tags(Idx, Tags, Count) ->
+      if
+          Idx == 1 ->
+              Count;
+          true ->
+              PreTag = lists:nth(Idx - 1, Tags),
+              NextTag = lists:nth(Idx, Tags),
+              if
+                  PreTag + 1 =/= NextTag ->
+                      adjust_count_for_missed_tags(Idx - 1, Tags, Count + 1);
+                  true ->
+                      adjust_count_for_missed_tags(Idx - 1, Tags, Count)
+              end
+      end.
+
+  -spec short_array_to_binary([integer()]) -> binary().
+
+  short_array_to_binary(X) ->
+      short_array_to_binary(X, <<>>).
+
+  -spec short_array_to_binary([integer()], binary()) -> binary().
+
+  short_array_to_binary(X, Acc) ->
+      if
+          length(X) == 0 ->
+              Size = size(Acc),
+              <<Size:32, Acc/binary>>;
+          true ->
+              Y = hd(X),
+              short_array_to_binary(tl(X), <<Acc/binary, Y:16>>)
+      end.
+
+  -spec int_array_to_binary([integer()]) -> binary().
+
+  int_array_to_binary(X) ->
+      int_array_to_binary(X, <<>>).
+
+  -spec int_array_to_binary([integer()], binary()) -> binary().
+
+  int_array_to_binary(X, Acc) ->
+      if
+          length(X) == 0 ->
+              Size = size(Acc),
+              <<Size:32, Acc/binary>>;
+          true ->
+              Y = hd(X),
+              int_array_to_binary(tl(X), <<Acc/binary, Y:32>>)
+      end.
+
+  -spec long_array_to_binary([integer()]) -> binary().
+
+  long_array_to_binary(X) ->
+      long_array_to_binary(X, <<>>).
+
+  -spec long_array_to_binary([integer()], binary()) -> binary().
+
+  long_array_to_binary(X, Acc) ->
+      if
+          length(X) == 0 ->
+              Size = size(Acc),
+              <<Size:32, Acc/binary>>;
+          true ->
+              Y = hd(X),
+              long_array_to_binary(tl(X), <<Acc/binary, Y:64>>)
+      end.
+
+  -spec string_array_to_binary([string()]) -> binary().
+
+  string_array_to_binary(X) ->
+      string_array_to_binary(X, <<>>).
+
+  -spec string_array_to_binary([string()], binary()) -> binary().
+
+  string_array_to_binary(X, Acc) ->
+      if
+          length(X) == 0 ->
+              Size = size(Acc),
+              <<Size:32, Acc/binary>>;
+          true ->
+              Y = unicode:characters_to_binary(hd(X)),
+              Size = size(Y),
+              string_array_to_binary(tl(X), <<Acc/binary, Size:32, Y/binary>>)
+      end."))
+      (list 'replace)))
+
+  (define (generate-erlang-serial env struct dir)
+    (let ((name (>erlang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((module-declare (string-append "-module(" (>erlang-module-name name) ").\n"))
+            (export "-export([encode/1, encode0pack/1, decode/1, decode0pack/1]).\n")
+            (includes (string-append "-include(\"tightrope.hrl\").\n" "-include(\"" name ".hrl\").\n"))
+            (encode-function (generate-erlang-encoder struct))
+            (encode-zero-pack-function (generate-erlang-encoder-zero-pack struct))
+            (decode-function (generate-erlang-decoder struct))
+            (decode-zero-pack-function (generate-erlang-decoder-zero-pack struct)))
+        (with-output-to-file
+            (string-append dir (>erlang-module-name name) ".erl")
+          (lambda ()
+            (write-string (string-append module-declare export includes encode-function encode-zero-pack-function decode-function decode-zero-pack-function)))
+          (list 'replace)))))
+
   (define (generate-erlang-serials env dir)
-    '())
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (generate-erlang-tightrope-runtime path)
+      (generate-erlang-zero-pack env dir)
+      (for-each
+       (lambda (entity) (generate-erlang-serial env entity path))
+       (get-structs env))))
 #+end_src
 
 *** 壓縮和解壓
 Tightrope 會在生成壓縮和解壓的 Erlang 代碼。
-#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/erlang.scm
+#+begin_src scheme :exports code :tangle /dev/shm/tightrope-build/erlang.scm
   (define (generate-erlang-zero-pack env dir)
     (let ((path dir)
           (src "-module(zeropack).
@@ -221,4 +740,36 @@ Tightrope 會在生成壓縮和解壓的 Erlang 代碼。
         (lambda ()
           (write-string src))
         (list 'replace))))
+#+end_src
+*** 輔助函數
+#+begin_src scheme :noweb-ref utility
+  (define (>erlang-name name)
+    (let loop ((src (map char-downcase (string->list name)))
+               (dst '()))
+      (if (null? src)
+          (list->string (reverse dst))
+          (let ((chr (car src))
+                (rest (cdr src)))
+            (if (eq? chr #\-)
+                (loop rest (cons #\_ dst))
+                (loop rest (cons chr dst)))))))
+
+  (define (>erlang-module-name name)
+    (>erlang-name name))
+
+  (define (>erlang-var-name name)
+    (let ((l (string->list (>erlang-name name))))
+      (list->string (cons (char-upcase (car l)) (cdr l)))))
+
+  (define (>erlang-type type)
+    (case type
+      ((byte) "byte()")
+      ((short) "integer()")
+      ((int) "integer()")
+      ((long) "integer()")
+      ((string) "string()")
+      (else "integer()")))
+
+  (define (generate-erlang-record-accessor sname fname)
+    (string-append (>erlang-var-name sname) "#" (>erlang-name sname) "." (>erlang-name fname)))
 #+end_src
