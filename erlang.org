@@ -57,7 +57,7 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
 1. 分析對象屬性，沒有設置的屬性，或者默認值爲 0 的屬性被跳過，同時轉換 string,
    數組，自定義結構爲二進制表達；
 2. 設置非對象屬性的值；
-3. 設置對象(包括字符串)屬性的二進制數據。
+3. 如果有的話，設置對象(包括字符串)屬性的二進制數據。
 
 #+begin_src scheme :exports code :noweb no :tangle /dev/shm/tightrope-build/erlang.scm
   (define (generate-erlang-record-match name fields)
@@ -110,17 +110,17 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
                ((eq? base-type 'short)
                 (string-append
                  (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
-                 (indent-line (+ base-indent 4) "ObjBin = tightrope:short_array_to_binary(" accessor "),")
+                 (indent-line (+ base-indent 4) "ObjBin = tightrope:number_array_to_binary(" accessor ", ?SHORT_SIZE),")
                  (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [ObjBin | ObjBins]});")))
                ((eq? base-type 'int)
                 (string-append
                  (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
-                 (indent-line (+ base-indent 4) "ObjBin = tightrope:int_array_to_binary(" accessor "),")
+                 (indent-line (+ base-indent 4) "ObjBin = tightrope:number_array_to_binary(" accessor ", ?INT_SIZE),")
                  (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [ObjBin | ObjBins]});")))
                ((eq? base-type 'long)
                 (string-append
                  (indent-line base-indent "Tag == " tag ", " accessor " /= nil ->")
-                 (indent-line (+ base-indent 4) "ObjBin = tightrope:long_array_to_binary(" accessor "),")
+                 (indent-line (+ base-indent 4) "ObjBin = tightrope:number_array_to_binary(" accessor ", ?LONG_SIZE),")
                  (indent-line (+ base-indent 4) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), #env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags], objbins = [ObjBin | ObjBins]});")))
                ((eq? base-type 'string)
                 (string-append
@@ -231,7 +231,7 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
                     (indent-line 26 "Buf")
                     (indent-line 18 "end,")
                     (indent-line 12 "case Tag of")
-                    (substring action 0 (- (string-length action) 2))
+                    (string-append (substring action 0 (- (string-length action) 2)) "\n")
                     (indent-line 12 "end")
                     (indent-line 4 "end."))))
         (string-append spec sign body))))
@@ -240,7 +240,6 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
     (let ((name (>erlang-name (struct-name struct)))
           (fields (struct-fields struct)))
       (let ((spec (string-append "-spec set_fields(binary(), #" name "{}, #env{}) -> binary().\n"))
-            ;(tags (strcat (map (lambda(x) (string-append (number->string (field-tag x)) ", ")) fields)))
             (sign "set_fields(Buf, X, Env) ->\n")
             (body (if (and (= (length fields) 1) (= (field-tag (car fields)) 0))
                       (string-append
@@ -309,7 +308,7 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
                     (indent-line 08 "true ->")
                     (indent-line 12 "Tag = hd(DTags),")
                     (indent-line 12 "case Tag of")
-                    (substring action 0 (- (string-length action) 2))
+                    (string-append (substring action 0 (- (string-length action) 2)) "\n")
                     (indent-line 12 "end")
                     (indent-line 4 "end."))))
         (string-append spec sign body))))
@@ -356,20 +355,158 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
 
 **** 解碼器
 
-#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/erlang.scm
-  (define (generate-erlang-decoder struct)
+解碼器分爲兩個主要步驟：
+1. 解析對象原始類型屬性，不包括 String，自定義結構和所有數組，以及超出表達範圍的 short, int, long；
+2. 解析數據區的數據，包括 String，自定義結構和所有數組，以及超出表達範圍的 short, int, long。
+
+#+begin_src scheme :exports code :noweb no :tangle /dev/shm/tightrope-build/erlang.scm
+  (define (generate-erlang-binary-to-object-array-recursive field)
+    (let ((type (>erlang-name (symbol->string (array-base-type (field-type field))))))
+      (let ((spec (string-append "-spec binary_to_" type "_array(binary()) -> [#" type "{}].\n"))
+            (sign (string-append "binary_to_" type "_array(X) when is_binary(X) ->\n"))
+            (body (indent-line 4 "binary_to_" type "_array(X, [])."))
+            (spec-recr (string-append "-spec binary_to_" type "_array(binary(), [#"type"{}]) -> [#" type "{}].\n"))
+            (sign-recr (string-append "binary_to_" type "_array(X, Acc) when is_binary(X) ->\n"))
+            (body-recr (string-append
+                        (indent-line 4 "if")
+                        (indent-line 8 "size(X) == 0 ->")
+                        (indent-line 12 "lists:reverse(Acc);")
+                        (indent-line 8 "true ->")
+                        (indent-line 12 "<<Size:32, Data:Size/binary, Rest/binary>> = X,")
+                        (indent-line 12 (>erlang-var-name type) " = " (>erlang-module-name type) ":decode(Data),")
+                        (indent-line 12 "binary_to_" type "_array(Rest, [" (>erlang-var-name type) " | Acc])")
+                        (indent-line 4 "end."))))
+        (string-append spec sign body spec-recr sign-recr body-recr))))
+
+  (define (generate-erlang-binary-to-object-array struct)
+    (let ((fields (filter (lambda (x) (let ((type (field-type x))) (and (array-type? type) (custom-type? (array-base-type type))))) (struct-fields struct))))
+      (strcat (map generate-erlang-binary-to-object-array-recursive fields))))
+
+  (define (generate-erlang-parse-fields-action sname field base-indent)
+    (let ((vname (>erlang-var-name sname))
+          (tag (number->string (field-tag field)))
+          (name (>erlang-name (field-name field))))
+      (let ((condition (indent-line base-indent "Tag == " tag " ->"))
+            (action (indent-line (+ base-indent 4) "parse_fields(Count - 1, Rest, Tag + 1, DTags, " vname "#" (>erlang-module-name sname) "{" name " = V bsr 1 - 1});")))
+        (string-append condition action))))
+
+  (define (generate-erlang-parse-fields-recursive sname fields)
+    (let ((vname (>erlang-var-name sname)))
+      (let ((spec (string-append "-spec parse_fields(non_neg_integer(), binary(), non_neg_integer(), [non_neg_integer()], #" (>erlang-module-name sname) "{}) -> {binary(), [non_neg_integer()], #" (>erlang-module-name sname) "{}}.\n"))
+            (sign (string-append "parse_fields(Count, Buffer, Tag, DTags, " vname ") ->\n"))
+            (body (string-append
+                   (indent-line 4 "if")
+                   (indent-line 8 "Count == 0 ->")
+                   (indent-line 12 "{Buffer, lists:reverse(DTags), " vname "};")
+                   (indent-line 8 "true ->")
+                   (indent-line 12 "<<V:16, Rest/binary>> = Buffer,")
+                   (indent-line 12 "if")
+                   (indent-line 16 "V band 1 == 1 ->")
+                   (indent-line 20 "parse_fields(Count - 1, Rest, Tag + ((V - 1) bsr 1), DTags, " vname ");")
+                   (indent-line 16 "V == 0 ->")
+                   (indent-line 20 "parse_fields(Count - 1, Rest, Tag + 1, [Tag | DTags], " vname ");")
+                   (strcat (map (lambda (x) (generate-erlang-parse-fields-action sname x 16)) (filter (lambda (x) (let ((type (field-type x))) (not (or (eq? type 'string) (custom-type? type) (array-type? type))))) fields)))
+                   (indent-line 16 "true ->")
+                   (indent-line 20 "parse_fields(Count - 1, Rest, Tag + 1, DTags, " vname ")")
+                   (indent-line 12 "end")
+                   (indent-line 4 "end."))))
+        (string-append spec sign body))))
+
+  (define (generate-erlang-parse-fields struct)
     (let ((name (>erlang-name (struct-name struct)))
           (fields (struct-fields struct)))
-      (let ((spec (string-append "-spec decode(binary()) -> #" name "{}.\n"))
-            (sign "decode(X) ->\n")
-            (body (indent-line 4 "#" name "{}.")))
+      (let ((spec (string-append "-spec parse_fields(binary()) -> {binary(), [non_neg_integer()], #" (>erlang-module-name name) "{}}.\n"))
+            (sign "parse_fields(X) ->\n")
+            (body (string-append
+                   (indent-line 4 "<<Count:16, Rest/binary>> = X,")
+                   (indent-line 4 "parse_fields(Count, Rest, 0, [], #" (>erlang-module-name name) "{}).")))
+            (recur (generate-erlang-parse-fields-recursive name fields)))
+        (string-append spec sign body recur))))
+
+  (define (generate-erlang-parse-data-action sname field base-indent)
+    (let ((tag (number->string (field-tag field)))
+          (name (>erlang-name (field-name field)))
+          (type (field-type field)))
+      (string-append
+       (indent-line base-indent tag " ->")
+       (indent-line (+ base-indent 4) "<<Length:32, Data:Length/binary, Rest/binary>> = Buffer,")
+       (if (array-type? type)
+           (let ((base-type (array-base-type type)))
+             (cond
+              ((custom-type? base-type)
+               (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = binary_to_" (>erlang-module-name (symbol->string base-type)) "_array(Data)});"))
+              ((eq? base-type 'string)
+               (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = tightrope:binary_to_string_array(Data)});"))
+              ((eq? base-type 'byte)
+               (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = tightrope:binary_to_number_array(Data, ?BYTE_SIZE)});"))
+              ((eq? base-type 'short)
+               (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = tightrope:binary_to_number_array(Data, ?SHORT_SIZE)});"))
+              ((eq? base-type 'int)
+               (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = tightrope:binary_to_number_array(Data, ?INT_SIZE)});"))
+              ((eq? base-type 'long)
+               (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = tightrope:binary_to_number_array(Data, ?LONG_SIZE)});"))))
+           (cond
+            ((custom-type? type)
+             (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = " (>erlang-module-name (symbol->string type)) ":decode(Data)});"))
+            ((eq? type 'string)
+             (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = unicode:characters_to_list(Data)});"))
+            ((eq? type 'short)
+             (string-append
+              (indent-line (+ base-indent 4) "<<Num:?SHORT_SIZE/integer-signed>> = Data,")
+              (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = Num});")))
+            ((eq? type 'int)
+             (string-append
+              (indent-line (+ base-indent 4) "<<Num:?INT_SIZE/integer-signed>> = Data,")
+              (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = Num});")))
+            ((eq? type 'long)
+             (string-append
+              (indent-line (+ base-indent 4) "<<Num:?LONG_SIZE/integer-signed>> = Data,")
+              (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = Num});")))
+            (else
+             (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "});")))))))
+
+  (define (generate-erlang-parse-data struct)
+    (let* ((name (>erlang-name (struct-name struct)))
+           (fields (struct-fields struct))
+           (vname (>erlang-var-name name))
+           (action (strcat (map (lambda (x) (generate-erlang-parse-data-action name x 16)) (filter (lambda (x) (not (eq? (field-type x) 'byte))) fields)))))
+      (let ((spec (string-append "-spec parse_data(binary(), [non_neg_integer()], #" (>erlang-module-name name) "{}) -> #" (>erlang-module-name name) "{}.\n"))
+            (sign (string-append "parse_data(Buffer, DTags, " vname ") ->\n"))
+            (body (string-append
+                   (indent-line 4 "if")
+                   (indent-line 8 "length(DTags) == 0 ->")
+                   (indent-line 12 vname ";")
+                   (indent-line 8 "true ->")
+                   (indent-line 12 "Tag = hd(DTags),")
+                   (indent-line 12 "case Tag of")
+                   (string-append (substring action 0 (- (string-length action) 2)) "\n")
+                   (indent-line 12 "end")
+                   (indent-line 4 "end."))))
         (string-append spec sign body))))
+
+  (define (generate-erlang-decoder struct)
+    (let* ((name (>erlang-name (struct-name struct)))
+           (fields (struct-fields struct))
+           (none-byte-type-count (length (filter (lambda (x) (not (eq? 'byte (field-type x)))) fields))))
+      (let ((binary-to-object-array (generate-erlang-binary-to-object-array struct))
+            (parse-fields (generate-erlang-parse-fields struct))
+            (parse-data (if (> none-byte-type-count 0) (generate-erlang-parse-data struct) ""))
+            (spec (string-append "-spec decode(binary()) -> #" name "{}.\n"))
+            (sign "decode(X) when is_binary(X) ->\n")
+            (body (if (> none-byte-type-count 0)
+                      (string-append
+                       (indent-line 4 "{Rest, DTags, " (>erlang-var-name name) " } = parse_fields(X),")
+                       (indent-line 4 "parse_data(Rest, DTags, " (>erlang-var-name name) ")."))
+                      (string-append
+                       (indent-line 4 "{_, _, " (>erlang-var-name name) " } = parse_fields(X),")
+                       (indent-line 4 (>erlang-var-name name) ".")))))
+        (string-append binary-to-object-array parse-fields parse-data spec sign body))))
 
   (define (generate-erlang-decoder-zero-pack struct)
     (let ((name (>erlang-name (struct-name struct)))
           (fields (struct-fields struct)))
       (let ((spec (string-append "-spec decode0pack(binary()) -> #" name "{}.\n"))
-            (sign "decode0pack(X) ->\n")
+            (sign "decode0pack(X) when is_binary(X) ->\n")
             (body (indent-line 4 "decode(zeropack:unpack(X)).")))
         (string-append spec sign body))))
 #+end_src
@@ -384,14 +521,22 @@ tightrope.erl 和 tightrope.hrl 文件中。
     (with-output-to-file
         (string-append dir "tightrope.hrl")
       (lambda ()
-        (write-string "-record(env, {count :: non_neg_integer(), tags :: [non_neg_integer()], dtags :: [non_neg_integer()], objbins :: [binary()]})."))
+        (write-string "-record(env, {count :: non_neg_integer(), tags :: [non_neg_integer()], dtags :: [non_neg_integer()], objbins :: [binary()]}).
+
+  -define(BYTE_SIZE, 8).
+
+  -define(SHORT_SIZE, 16).
+
+  -define(INT_SIZE, 32).
+
+  -define(LONG_SIZE, 64)."))
       (list 'replace))
     (with-output-to-file
         (string-append dir "tightrope.erl")
       (lambda ()
         (write-string "-module(tightrope).
 
-  -export([adjust_count_for_tag_0/1, adjust_count_for_missed_tags/1, short_array_to_binary/1, int_array_to_binary/1, long_array_to_binary/1, string_array_to_binary/1]).
+  -export([adjust_count_for_tag_0/1, adjust_count_for_missed_tags/1, number_array_to_binary/2, binary_to_number_array/2, string_array_to_binary/1, binary_to_string_array/1]).
 
   -include(\"tightrope.hrl\").
 
@@ -431,55 +576,37 @@ tightrope.erl 和 tightrope.hrl 文件中。
               end
       end.
 
-  -spec short_array_to_binary([integer()]) -> binary().
+  -spec number_array_to_binary([integer()], non_neg_integer()) -> binary().
 
-  short_array_to_binary(X) ->
-      short_array_to_binary(X, <<>>).
+  number_array_to_binary(X, Size) ->
+      number_array_to_binary(X, Size, <<>>).
 
-  -spec short_array_to_binary([integer()], binary()) -> binary().
+  -spec number_array_to_binary([integer()], non_neg_integer(), binary()) -> binary().
 
-  short_array_to_binary(X, Acc) ->
+  number_array_to_binary(X, Size, Acc) ->
       if
           length(X) == 0 ->
-              Size = size(Acc),
-              <<Size:32, Acc/binary>>;
+              Length = size(Acc),
+              <<Length:32, Acc/binary>>;
           true ->
               Y = hd(X),
-              short_array_to_binary(tl(X), <<Acc/binary, Y:16>>)
+              number_array_to_binary(tl(X), Size, <<Acc/binary, Y:Size/integer-signed>>)
       end.
 
-  -spec int_array_to_binary([integer()]) -> binary().
+  -spec binary_to_number_array(binary(), non_neg_integer()) -> [integer()].
 
-  int_array_to_binary(X) ->
-      int_array_to_binary(X, <<>>).
+  binary_to_number_array(X, Size) when is_binary(X) ->
+      binary_to_number_array(X, Size, []).
 
-  -spec int_array_to_binary([integer()], binary()) -> binary().
+  -spec binary_to_number_array(binary(), non_neg_integer(), [integer()]) -> [integer()].
 
-  int_array_to_binary(X, Acc) ->
+  binary_to_number_array(X, Size, Acc) when is_binary(X) ->
       if
-          length(X) == 0 ->
-              Size = size(Acc),
-              <<Size:32, Acc/binary>>;
+          size(X) == 0 ->
+              lists:reverse(Acc);
           true ->
-              Y = hd(X),
-              int_array_to_binary(tl(X), <<Acc/binary, Y:32>>)
-      end.
-
-  -spec long_array_to_binary([integer()]) -> binary().
-
-  long_array_to_binary(X) ->
-      long_array_to_binary(X, <<>>).
-
-  -spec long_array_to_binary([integer()], binary()) -> binary().
-
-  long_array_to_binary(X, Acc) ->
-      if
-          length(X) == 0 ->
-              Size = size(Acc),
-              <<Size:32, Acc/binary>>;
-          true ->
-              Y = hd(X),
-              long_array_to_binary(tl(X), <<Acc/binary, Y:64>>)
+              <<Data:Size/integer-signed, Rest/binary>> = X,
+              binary_to_number_array(Rest, Size, [Data | Acc])
       end.
 
   -spec string_array_to_binary([string()]) -> binary().
@@ -498,6 +625,22 @@ tightrope.erl 和 tightrope.hrl 文件中。
               Y = unicode:characters_to_binary(hd(X)),
               Size = size(Y),
               string_array_to_binary(tl(X), <<Acc/binary, Size:32, Y/binary>>)
+      end.
+
+  -spec binary_to_string_array(binary()) -> [string()].
+
+  binary_to_string_array(X) when is_binary(X) ->
+      binary_to_string_array(X, []).
+
+  -spec binary_to_string_array(binary(), [string()]) -> [string()].
+
+  binary_to_string_array(X, Acc) when is_binary(X) ->
+      if
+          size(X) == 0 ->
+              lists:reverse(Acc);
+          true ->
+              <<Size:32, Str:Size/binary, Rest/binary>> = X,
+              binary_to_string_array(Rest, [unicode:characters_to_list(Str) | Acc])
       end."))
       (list 'replace)))
 
