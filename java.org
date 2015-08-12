@@ -241,9 +241,9 @@ buffer 的長度。
               (if (array-type? type)
                   (cond
                    ((eq? (array-base-type type) 'byte) (string-append "buf.putInt(" attr-name ".length); buf.put(" attr-name ");"))
-                   ((eq? (array-base-type type) 'short) (string-append "buf.putInt(" attr-name ".length); for (int j = 0; j < " attr-name ".length; j ++) { buf.putShort(" attr-name "[j]);}"))
-                   ((eq? (array-base-type type) 'int) (string-append "buf.putInt(" attr-name ".length); for (int j = 0; j < " attr-name ".length; j ++) { buf.putInt(" attr-name "[j]);}"))
-                   ((eq? (array-base-type type) 'long) (string-append "buf.putInt(" attr-name ".length); for (int j = 0; j < " attr-name ".length; j ++) { buf.putLong(" attr-name "[j]);}"))
+                   ((eq? (array-base-type type) 'short) (string-append "buf.putInt(" attr-name ".length * 2); for (int j = 0; j < " attr-name ".length; j ++) { buf.putShort(" attr-name "[j]);}"))
+                   ((eq? (array-base-type type) 'int) (string-append "buf.putInt(" attr-name ".length * 4); for (int j = 0; j < " attr-name ".length; j ++) { buf.putInt(" attr-name "[j]);}"))
+                   ((eq? (array-base-type type) 'long) (string-append "buf.putInt(" attr-name ".length* 8); for (int j = 0; j < " attr-name ".length; j ++) { buf.putLong(" attr-name "[j]);}"))
                    ((eq? (array-base-type type) 'string) (let ((bs (if (> strarrcnt 1) (string-append " strarrbytes[" strarridx "][j]") " strarrbyte[j]"))) (string-append "sum = 0; for (int j = 0; j < " attr-name ".length; j ++) {byte [] bs = " bs "; sum += bs.length;} buf.putInt(sum); buf.putInt(" attr-name ".length); for (int j = 0; j < " attr-name ".length; j ++) { byte [] bs = " bs "; buf.putInt(bs.length); buf.put(bs);}")))
                    (else (let ((bs (if (> objarrcnt 1) (string-append " objarrbytes[" objarridx "][j]") "objarrbyte[j]"))) (string-append "sum = 0; for (int j = 0; j < "attr-name".length; j ++) {byte [] bs = "bs"; sum += bs.length;} buf.putInt(sum); buf.putInt(" attr-name ".length); for (int j = 0; j < " attr-name ".length; j ++) { byte [] bs = " bs "; buf.putInt(bs.length); buf.put(bs);}"))))
                   (cond
@@ -360,9 +360,9 @@ buffer 的長度。
               (if (array-type? type)
                   (cond
                    ((eq? (array-base-type type) 'byte) (string-append "{int len = buf.getInt(); byte [] tmp = new byte [len]; buf.get(tmp); " attr-name " = tmp;}"))
-                   ((eq? (array-base-type type) 'short) (string-append "{int len = buf.getInt(); short [] tmp = new short [len]; for (int j = 0; j < len; j ++) { tmp[j] = buf.getShort(); } " attr-name " = tmp;}"))
-                   ((eq? (array-base-type type) 'int) (string-append "{int len = buf.getInt(); int [] tmp = new int [len]; for (int j = 0; j < len; j ++) { tmp[j] = buf.getInt(); } " attr-name " = tmp;}"))
-                   ((eq? (array-base-type type) 'long) (string-append "{int len = buf.getInt(); long [] tmp = new long [len]; for (int j = 0; j < len; j ++) { tmp[j] = buf.getLong(); } " attr-name " = tmp;}"))
+                   ((eq? (array-base-type type) 'short) (string-append "{int len = buf.getInt(); short [] tmp = new short [len / 2]; for (int j = 0, l = len / 2; j < l; j ++) { tmp[j] = buf.getShort(); } " attr-name " = tmp;}"))
+                   ((eq? (array-base-type type) 'int) (string-append "{int len = buf.getInt(); int [] tmp = new int [len / 4]; for (int j = 0, l = len / 4; j < l; j ++) { tmp[j] = buf.getInt(); } " attr-name " = tmp;}"))
+                   ((eq? (array-base-type type) 'long) (string-append "{int len = buf.getInt(); long [] tmp = new long [len / 8]; for (int j = 0, l = len / 8; j < l; j ++) { tmp[j] = buf.getLong(); } " attr-name " = tmp;}"))
                    ((eq? (array-base-type type) 'string) (string-append "{int total = buf.getInt(); int len = buf.getInt(); String [] tmp = new String [len]; for (int j = 0; j < len; j ++) { int l = buf.getInt(); byte [] b = new byte[l]; buf.get(b); tmp[j] = new String(b, \"utf-8\"); } " attr-name " = tmp;}"))
                    (else
                     (let ((custom-class-name (>java-class-name (symbol->string (array-base-type type)))))
