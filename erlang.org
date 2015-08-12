@@ -155,7 +155,7 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
               (string-append
                (indent-line base-indent "Tag == " tag ", " accessor " /= 0 ->")
                (indent-line (+ base-indent 4) "if")
-               (indent-line (+ base-indent 8) "-16384 < " accessor ", " accessor " < 16383 ->")
+               (indent-line (+ base-indent 8) "0 < " accessor ", " accessor " < 16383 ->")
                (indent-line (+ base-indent 12) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), Env#env{count = Count + 1, tags = [" tag " | Tags], dtags = [" tag " | DTags]});")
                (indent-line (+ base-indent 8) " true ->")
                (indent-line (+ base-indent 12) "analyzer(" (>erlang-var-name sname) ", tl(CheckTags), Env#env{count = Count + 1, tags = [" tag " | Tags]})")
@@ -202,7 +202,7 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
            (let ((vname (>erlang-var-name fname)))
              (string-append
               (indent-line (+ base-indent 4) "if")
-              (indent-line (+ base-indent 8) "-16384 < " vname ", " vname " < 16383 ->")
+              (indent-line (+ base-indent 8) "0 < " vname ", " vname " < 16383 ->")
               (indent-line (+ base-indent 12) "set_fields(<<Tmp/binary, ((" vname " + 1) * 2):16>>, X, tl(Tags), Tag);")
               (indent-line (+ base-indent 8) "true ->")
               (indent-line (+ base-indent 12) "set_fields(<<Tmp/binary, 0:16>>, X, tl(Tags), Tag)")
