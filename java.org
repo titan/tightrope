@@ -318,7 +318,7 @@ buffer 的長度。
 #+begin_src scheme :noweb-ref decode-get-fields
   (define (generate-java-decoder-get-field struct-name field idx)
     (let ((name (>java-name (field-name field)))
-          (tag (field-tag field))
+          (tag (number->string (field-tag field)))
           (type (field-type field)))
       (let* ((attr-name (string-append struct-name "." name))
              (get
@@ -329,7 +329,7 @@ buffer 的長度。
                ((eq? type 'long) (string-append attr-name " = v / 2 - 1;"))
                (else ""))))
         (case type
-          ((byte short int long) (string-append "case " idx ":" get " break;"))
+          ((byte short int long) (string-append "case " tag ":" get " break;"))
           (else "")))))
 
   (define (generate-java-decoder-get-fields struct)
