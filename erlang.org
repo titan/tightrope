@@ -92,52 +92,52 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
          (if (array-type? type)
              (string-append
               (indent-line (+ base-indent 4) "if")
-              (indent-line (+ base-indent 8) accessor " /= nil, " accessor " /= undefined ->")
-              (indent-line (+ base-indent 12) "{Tmp, Cnt} = tightrope:padding(LastTag, Tag, Buf),")
-              (indent-line (+ base-indent 12) "set_fields(X, Tag, Tag + 1, <<Tmp/binary, 0:16>>, [Tag | DTags], Count + Cnt + 1);")
+              (indent-line (+ base-indent 8) accessor " /= undefined, " accessor " /= nil ->")
+              (indent-line (+ base-indent 12) "{Tmp, Cnt} = tightrope:padding(Tag, NextTag, Buf),")
+              (indent-line (+ base-indent 12) "set_fields(X, NextTag + 1, NextTag + 1, <<Tmp/binary, 0:16>>, [NextTag | DTags], Count + Cnt + 1);")
               (indent-line (+ base-indent 8) "true ->")
-              (indent-line (+ base-indent 12) "set_fields(X, LastTag, Tag + 1, Buf, DTags, Count)")
+              (indent-line (+ base-indent 12) "set_fields(X, Tag, NextTag + 1, Buf, DTags, Count)")
               (indent-line (+ base-indent 4) "end;"))
              (if (or (eq? type 'string) (custom-type? type))
                  (string-append
                   (indent-line (+ base-indent 4) "if")
-                  (indent-line (+ base-indent 8) accessor " /= nil, " accessor " /= undefined ->")
-                  (indent-line (+ base-indent 12) "{Tmp, Cnt} = tightrope:padding(LastTag, Tag, Buf),")
-                  (indent-line (+ base-indent 12) "set_fields(X, Tag, Tag + 1, <<Tmp/binary, 0:16>>, [Tag | DTags], Count + Cnt + 1);")
+                  (indent-line (+ base-indent 8) accessor " /= undefined, " accessor " /= nil ->")
+                  (indent-line (+ base-indent 12) "{Tmp, Cnt} = tightrope:padding(Tag, NextTag, Buf),")
+                  (indent-line (+ base-indent 12) "set_fields(X, NextTag + 1, NextTag + 1, <<Tmp/binary, 0:16>>, [NextTag | DTags], Count + Cnt + 1);")
                   (indent-line (+ base-indent 8) "true ->")
-                  (indent-line (+ base-indent 12) "set_fields(X, LastTag, Tag + 1, Buf, DTags, Count)")
+                  (indent-line (+ base-indent 12) "set_fields(X, Tag, NextTag + 1, Buf, DTags, Count)")
                   (indent-line (+ base-indent 4) "end;"))
                  (string-append
                   (indent-line (+ base-indent 4) "if")
-                  (indent-line (+ base-indent 8) accessor " /= 0, " accessor " /= undefined ->")
-                  (indent-line (+ base-indent 12) "{Tmp, Cnt} = tightrope:padding(LastTag, Tag, Buf),")
+                  (indent-line (+ base-indent 8) accessor " /= undefined, " accessor " /= 0 ->")
+                  (indent-line (+ base-indent 12) "{Tmp, Cnt} = tightrope:padding(Tag, NextTag, Buf),")
                   (indent-line (+ base-indent 12) "if")
                   (if (eq? type 'byte)
                       (indent-line (+ base-indent 16) "0 < " accessor " ->")
                       (indent-line (+ base-indent 16) "0 < " accessor ", " accessor " < 16383 ->"))
-                  (indent-line (+ base-indent 20) "set_fields(X, Tag, Tag + 1, <<Tmp/binary, ((" accessor " + 1) * 2):16>>, DTags, Count + Cnt + 1);")
+                  (indent-line (+ base-indent 20) "set_fields(X, NextTag + 1, NextTag + 1, <<Tmp/binary, ((" accessor " + 1) * 2):16>>, DTags, Count + Cnt + 1);")
                   (indent-line (+ base-indent 16) " true ->")
-                  (indent-line (+ base-indent 20) "set_fields(X, Tag, Tag + 1, <<Tmp/binary, 0:16>>, [Tag | DTags], Count + Cnt + 1)")
+                  (indent-line (+ base-indent 20) "set_fields(X, NextTag + 1, NextTag + 1, <<Tmp/binary, 0:16>>, [NextTag | DTags], Count + Cnt + 1)")
                   (indent-line (+ base-indent 12) "end;")
                   (indent-line (+ base-indent 8) "true ->")
-                  (indent-line (+ base-indent 12) "set_fields(X, LastTag, Tag + 1, Buf, DTags, Count)")
+                  (indent-line (+ base-indent 12) "set_fields(X, Tag, NextTag + 1, Buf, DTags, Count)")
                   (indent-line (+ base-indent 4) "end;"))))))))
 
   (define (generate-erlang-set-fields-recursive struct)
     (let ((name (>erlang-name (struct-name struct)))
           (fields (struct-fields struct)))
       (let* ((spec (string-append "-spec set_fields(#" name "{}, non_neg_integer(), non_neg_integer(), binary(), [non_neg_integer()], non_neg_integer()) -> {binary(), [non_neg_integer()]}.\n"))
-             (sign "set_fields(X, LastTag, Tag, Buf, DTags, Count) ->\n")
+             (sign "set_fields(X, Tag, NextTag, Buf, DTags, Count) ->\n")
              (max-tag (number->string (apply max (map (lambda(x) (field-tag x)) fields))))
              (body (string-append
                     (indent-line 04 "if")
-                    (indent-line 08 "Tag > " max-tag " ->")
+                    (indent-line 08 "NextTag > " max-tag " ->")
                     (indent-line 12 "{<<Count:16, Buf/binary>>, lists:reverse(DTags)};")
                     (indent-line 08 "true ->")
-                    (indent-line 12 "case Tag of")
+                    (indent-line 12 "case NextTag of")
                     (strcat (map (lambda(x) (generate-erlang-set-field-action name x 16)) fields))
                     (indent-line 16 "_ ->")
-                    (indent-line 20 "set_fields(X, LastTag, Tag + 1, Buf, DTags, Count)")
+                    (indent-line 20 "set_fields(X, Tag, NextTag + 1, Buf, DTags, Count)")
                     (indent-line 12 "end")
                     (indent-line 4 "end."))))
         (string-append spec sign body))))
@@ -499,18 +499,13 @@ tightrope.erl 和 tightrope.hrl 文件中。
       end.
 
   -spec padding(non_neg_integer(), non_neg_integer(), binary()) -> {binary(), 0 | 1}.
-  padding(LastTag, Tag, Buf) ->
+  padding(Tag, NextTag, Buf) ->
       if
-          LastTag == Tag->
+          Tag == NextTag ->
               {Buf, 0};
-          LastTag == 0, Tag /= 1 ->
-              T = Tag * 2 + 1,
-              {<<Buf/binary, T:16>>, 1};
-          LastTag + 1 /= Tag ->
-              T = (Tag - LastTag - 1) * 2 + 1,
-              {<<Buf/binary, T:16>>, 1};
           true ->
-              {Buf, 0}
+              T = (NextTag - Tag) * 2 + 1,
+              {<<Buf/binary, T:16>>, 1}
       end."))
       (list 'replace)))
 
