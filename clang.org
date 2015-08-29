@@ -1,0 +1,31 @@
+* c 後端實現
+
+正在進行中。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
+  (define (generate-clang-entity struct dir)
+    '())
+  (define (generate-clang-entities env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (for-each
+       (lambda (entity) (generate-clang-entity entity path))
+       (get-structs env))))
+
+  (define (>clang-name name)
+    name)
+
+  (define (generate-clang-serial env struct dir)
+    (let ((name (>clang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      '()))
+
+  (define (generate-clang-serials env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (for-each
+       (lambda (entity) (generate-clang-serial env entity path))
+       (get-structs env))))
+#+end_src
