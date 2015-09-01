@@ -1,6 +1,6 @@
 * erlang 後端實現
 
-*** 實體對象
+** 實體對象
 Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現中，用 record 來實
 現數據結構。實體對象的定義保存在對應的 hrl 文件中，方便各個模塊調用。
 
@@ -47,7 +47,7 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
        (get-structs env))))
 #+end_src
 
-*** 序列化與反序列化
+** 序列化與反序列化
 
 **** 編碼器
 
@@ -534,7 +534,7 @@ tightrope.erl 和 tightrope.hrl 文件中。
        (get-structs env))))
 #+end_src
 
-*** 壓縮和解壓
+** 壓縮和解壓
 Tightrope 會在生成壓縮和解壓的 Erlang 代碼。
 #+begin_src scheme :exports code :tangle /dev/shm/tightrope-build/erlang.scm
   (define (generate-erlang-zero-pack env dir)
@@ -747,7 +747,7 @@ Tightrope 會在生成壓縮和解壓的 Erlang 代碼。
           (write-string src))
         (list 'replace))))
 #+end_src
-*** 輔助函數
+** 輔助函數
 #+begin_src scheme :noweb-ref utility
   (define (>erlang-name name)
     (let loop ((src (map char-downcase (string->list name)))

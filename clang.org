@@ -1,10 +1,59 @@
 * c 後端實現
 
 正在進行中。
+** 實體對象
+在 Tightrope C 實現中，用結構體來實現數據結構，實體對象的名稱遵循 C 語言的命名規
+則，以 "_t" 結尾。實體對象的定義保存在對應的頭文件中，方便各個模塊調用。
 
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
+  <<utility>>
+
+  (define (generate-clang-include field)
+    (if (custom-type? (field-type field))
+        (string-append "#include \"" (>clang-name (symbol->string (field-type field))) ".h\"\n")
+        ""))
+
+  (define (generate-clang-field-declare field)
+    (let ((name (>clang-name (field-name field)))
+          (type (field-type field)))
+      (if (array-type? type)
+          (string-append (>clang-type (array-base-type type)) " * " name ";")
+          (string-append (>clang-type type) " " name ";"))))
+
   (define (generate-clang-entity struct dir)
-    '())
+    (let ((name (>clang-name (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((macro-name (>clang-macro-name (string-append "_" name "_h")))
+            (includes (strcat (map generate-clang-include fields)))
+            (sname (>clang-struct-name name))
+            (field-decls (strcat (map (lambda (x) (indent-line 4 (generate-clang-field-declare x))) fields))))
+        (let ((content
+               (string-append
+                (indent-line 0 "#ifndef " macro-name)
+                (indent-line 0 "#define " macro-name)
+                (indent-line 0 "#include <stdint.h>")
+                includes
+                (indent-line 0 "#ifdef __cplusplus")
+                (indent-line 0 "extern \"C\" {")
+                (indent-line 0 "#endif")
+                (indent-line 2 "typedef struct " name " " sname ";")
+                (indent-line 2 "struct " name " {")
+                field-decls
+                (indent-line 2 "};")
+                (indent-line 2 "int " name "_calculate_size(" sname " *);")
+                (indent-line 2 "void " name "_encode(" sname " *, unsigned char *);")
+                (indent-line 2 "int " name "_estimate_size(unsigned char *);")
+                (indent-line 2 "void " name "_decode(unsigned char *, " sname " *);")
+                (indent-line 0 "#ifdef __cplusplus")
+                (indent-line 0 "}")
+                (indent-line 0 "#endif")
+                (indent-line 0 "#endif"))))
+          (with-output-to-file
+              (string-append dir name ".h")
+            (lambda ()
+              (write-string content))
+            (list 'replace))))))
+
   (define (generate-clang-entities env dir)
     (let ((path dir))
       (if (and (> (string-length path) 0) (not (file-exists? path)))
@@ -12,10 +61,11 @@
       (for-each
        (lambda (entity) (generate-clang-entity entity path))
        (get-structs env))))
+#+end_src
 
-  (define (>clang-name name)
-    name)
+** 序列化與反序列化
 
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
   (define (generate-clang-serial env struct dir)
     (let ((name (>clang-name (struct-name struct)))
           (fields (struct-fields struct)))
@@ -28,4 +78,32 @@
       (for-each
        (lambda (entity) (generate-clang-serial env entity path))
        (get-structs env))))
+#+end_src
+** 輔助函數
+#+begin_src scheme :noweb-ref utility
+  (define (>clang-name name)
+    (let loop ((src (map char-downcase (string->list name)))
+               (dst '()))
+      (if (null? src)
+          (list->string (reverse dst))
+          (let ((chr (car src))
+                (rest (cdr src)))
+            (if (eq? chr #\-)
+                (loop rest (cons #\_ dst))
+                (loop rest (cons chr dst)))))))
+
+  (define (>clang-struct-name name)
+    (string-append (>clang-name name) "_t"))
+
+  (define (>clang-macro-name name)
+    (list->string (map char-upcase (string->list name))))
+
+  (define (>clang-type type)
+    (case type
+      ((byte) "char")
+      ((short) "int16_t")
+      ((int) "int32_t")
+      ((long) "int64_t")
+      ((string) "char *")
+      (else (>clang-struct-name (symbol->string type)))))
 #+end_src
