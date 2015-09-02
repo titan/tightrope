@@ -17,8 +17,15 @@
     (let ((name (>clang-name (field-name field)))
           (type (field-type field)))
       (if (array-type? type)
-          (string-append (>clang-type (array-base-type type)) " * " name ";")
+          (string-append (>clang-type (array-base-type type)) " * " name ";\n    int __" name "_len;")
           (string-append (>clang-type type) " " name ";"))))
+
+  (define (generate-clang-field-setter-declare struct-name field)
+    (let ((name (>clang-name (field-name field)))
+          (type (field-type field)))
+      (if (array-type? type)
+          (string-append "void " struct-name "_set_" name "(" (>clang-struct-name struct-name) " *, " (>clang-type (array-base-type type)) " *, int);")
+          "")))
 
   (define (generate-clang-entity struct dir)
     (let ((name (>clang-name (struct-name struct)))
@@ -26,7 +33,8 @@
       (let ((macro-name (>clang-macro-name (string-append "_" name "_h")))
             (includes (strcat (map generate-clang-include fields)))
             (sname (>clang-struct-name name))
-            (field-decls (strcat (map (lambda (x) (indent-line 4 (generate-clang-field-declare x))) fields))))
+            (field-decls (strcat (map (lambda (x) (indent-line 4 (generate-clang-field-declare x))) fields)))
+            (setters (strcat (map (lambda (x) (indent-line 2 (generate-clang-field-setter-declare name x))) (filter (lambda (y) (array-type? (field-type y))) fields)))))
         (let ((content
                (string-append
                 (indent-line 0 "#ifndef " macro-name)
@@ -44,6 +52,7 @@
                 (indent-line 2 "void " name "_encode(" sname " *, unsigned char *);")
                 (indent-line 2 "int " name "_estimate_size(unsigned char *);")
                 (indent-line 2 "void " name "_decode(unsigned char *, " sname " *);")
+                setters
                 (indent-line 0 "#ifdef __cplusplus")
                 (indent-line 0 "}")
                 (indent-line 0 "#endif")
