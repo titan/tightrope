@@ -72,6 +72,173 @@
        (get-structs env))))
 #+end_src
 
+** 壓縮與解壓
+Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調用。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
+  (define (generate-clang-zero-pack-header path)
+    (let ((src "#ifndef _ZEROPACK_H
+  #define _ZEROPACK_H
+  #ifdef __cplusplus
+  extern \"C\" {
+  #endif
+    int zeropack(unsigned char * src, int len, unsigned char * dst);
+    int zerounpack(unsigned char * src, int len, unsigned char * dst);
+  #ifdef __cplusplus
+  }
+  #endif
+  #"))
+      (with-output-to-file
+          (string-append path "zeropack.h")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-clang-zero-pack-source path)
+    (let ((src "#include <string.h>
+  #include \"zeropack.h\"
+
+  int zeropack(unsigned char * src, int len, unsigned char * dst) {
+    unsigned char ffcnt = 0;
+    int ffpos = 0;
+    unsigned char oocnt = 0;
+    int oopos = 0;
+    int ptr = 1;
+    unsigned char bytes[0];
+    int bptr = 0;
+    unsigned char bitmap = 0;
+    int blen = len + ((len % 8) != 0 ? (8 - len % 8): 0);
+    unsigned char buf[blen];
+    memset(buf, 0, blen);
+    memcpy(buf, src, len);
+    for (int i = 0, l = blen / 8; i < l; i ++) {
+      bptr = 0;
+      bitmap = 0;
+      for (int j = 0; j < 8; j ++) {
+        if (buf[i * 8 + j] != 0) {
+          bitmap = bitmap | (1 << (8 - j - 1));
+          bytes[bptr ++] = buf[i * 8 + j];
+        }
+      }
+      if (bitmap == 0x00) {
+        if (ffcnt > 0) {
+          dst[ffpos] = ffcnt;
+          ffcnt = 0;
+        }
+        if (oocnt == 0) {
+          dst[ptr ++] = 0x00;
+          oopos = ptr ++;
+          oocnt ++;
+        } else if (oocnt == 0xFF) {
+          dst[oopos] = 0xFF;
+          dst[ptr ++] = 0x00;
+          oopos = ptr ++;
+          oocnt = 1;
+        } else {
+          oocnt ++;
+        }
+      } else if (bitmap == 0xFF) {
+        if (oocnt > 0) {
+          dst[oopos] = oocnt;
+          oocnt = 0;
+        }
+        if (ffcnt == 0) {
+          dst[ptr ++] = 0xFF;
+          ffpos = ptr ++;
+          ffcnt ++;
+        } else if (ffcnt == 0xFF) {
+          dst[ffpos] = 0xFF;
+          dst[ptr ++] = 0xFF;
+          ffpos = ptr ++;
+          ffcnt = 1;
+        } else {
+          ffcnt ++;
+        }
+        for (int k = 0; k < bptr; k ++) {
+          dst[ptr ++] = bytes[k];
+        }
+      } else {
+        dst[ptr ++] = bitmap;
+        if (oocnt > 0) {
+          dst[oopos] = oocnt;
+          oocnt = 0;
+        } else if (ffcnt > 0) {
+          dst[ffpos] = ffcnt;
+          ffcnt = 0;
+        }
+        for (int k = 0; k < bptr; k ++) {
+          dst[ptr ++] = bytes[k];
+        }
+      }
+    }
+    if (oocnt > 0) {
+      dst[oopos] = oocnt;
+    } else if (ffcnt > 0) {
+      dst[ffpos] = ffcnt;
+    }
+
+    dst[0] = blen / ptr + (blen % ptr != 0? 1 : 0);
+
+    return ptr;
+  }
+
+  int zerounpack(unsigned char * src, int len, unsigned char * dst) {
+    int sptr = 1;
+    int dptr = 0;
+    int cnt = 0;
+    while (sptr < len) {
+      switch (src[sptr]) {
+      case 0:
+        cnt = src[sptr + 1];
+        for (int i = 0; i < cnt; i ++) {
+          dst[dptr ++] = 0;
+          dst[dptr ++] = 0;
+          dst[dptr ++] = 0;
+          dst[dptr ++] = 0;
+          dst[dptr ++] = 0;
+          dst[dptr ++] = 0;
+          dst[dptr ++] = 0;
+          dst[dptr ++] = 0;
+        }
+        sptr += 2;
+        break;
+      case 0xFF:
+        cnt = src[sptr + 1];
+        memcpy(dst + dptr, src + sptr + 2, cnt * 8);
+        dptr += cnt * 8;
+        sptr += 2 + cnt * 8;
+        break;
+      default:
+        cnt = 0;
+        for (int i = 0; i < 8; i ++) {
+          if ((src[sptr] & (1 << (8 - i - 1))) > 0) {
+            cnt ++;
+            dst[dptr ++] = src[sptr + cnt];
+          } else {
+            dst[dptr ++] = 0;
+          }
+        }
+        sptr += cnt + 1;
+        break;
+      }
+    }
+    return dptr;
+  }
+  "))
+      (with-output-to-file
+          (string-append path "zeropack.c")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-clang-zero-pack env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (generate-clang-zero-pack-header path)
+      (generate-clang-zero-pack-source path)))
+#+end_src
+
 ** 序列化與反序列化
 
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
@@ -84,6 +251,7 @@
     (let ((path dir))
       (if (and (> (string-length path) 0) (not (file-exists? path)))
           (mkdir-p path))
+      (generate-clang-zero-pack env dir)
       (for-each
        (lambda (entity) (generate-clang-serial env entity path))
        (get-structs env))))
