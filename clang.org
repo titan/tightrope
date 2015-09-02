@@ -17,8 +17,8 @@
     (let ((name (>clang-name (field-name field)))
           (type (field-type field)))
       (if (array-type? type)
-          (string-append (>clang-type (array-base-type type)) " * " name ";\n    int __" name "_len;")
-          (string-append (>clang-type type) " " name ";"))))
+          (string-append (>clang-type (array-base-type type)) (if (custom-type? type) "*" " ") "* " name ";\n    int __" name "_len;")
+          (string-append (>clang-type type) (if (custom-type? type) "*" " ") name ";"))))
 
   (define (generate-clang-field-setter-declare struct-name field)
     (let ((name (>clang-name (field-name field)))
@@ -242,10 +242,76 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
 ** 序列化與反序列化
 
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
+  (define (generate-clang-calculate-size-recursive sname field indent)
+    (let ((type (field-type field))
+          (name (>clang-name (field-name field))))
+      (let ((accessor (>clang-accessor sname name))
+            (len-accessor (>clang-accessor sname (string-append "__" name "_len"))))
+        (if (array-type? type)
+            (let ((base-type (array-base-type type)))
+              (cond
+               ((primitive-type? base-type)
+                (string-append
+                 (indent-line indent "if (" accessor " != NULL) {")
+                 (indent-line (+ indent 2) "size += 2 + 4 + " len-accessor " * " (case base-type ((short) "2") ((int) "4") ((long) "8") (else "1")) ";")
+                 (indent-line indent "}")))
+               ((eq? base-type 'string)
+                (string-append
+                 (indent-line indent "if (" accessor " != NULL) {")
+                 (indent-line (+ indent 2) "size += 2 + 4 + 4;")
+                 (indent-line (+ indent 2) "for (int i = 0; i < " len-accessor "; i ++) {")
+                 (indent-line (+ indent 4) "size += 4 + strlen(" accessor "[i]);")
+                 (indent-line (+ indent 2) "}")
+                 (indent-line indent "}")))
+               (else
+                (string-append
+                 (indent-line indent "if (" accessor " != NULL) {")
+                 (indent-line (+ indent 2) "size += 2 + 4 + 4;")
+                 (indent-line (+ indent 2) "for (int i = 0; i < " len-accessor "; i ++) {")
+                 (indent-line (+ indent 4) "size += 4 + " (>clang-name (symbol->string base-type)) "_calculate_size(" accessor "[i]);")
+                 (indent-line (+ indent 2) "}")
+                 (indent-line indent "}")))))
+            (cond
+             ((primitive-type? type)
+              (string-append
+               (indent-line indent "if (" accessor " != 0) {")
+               (if (eq? type 'byte)
+                   (indent-line (+ indent 2) "size += 2;")
+                   (string-append
+                    (indent-line (+ indent 2) "if (" accessor " > 0 && " accessor " < 16383) {")
+                    (indent-line (+ indent 4) "size += 2;")
+                    (indent-line (+ indent 2) "} else {")
+                    (indent-line (+ indent 4) "size += 2 + 4 + " (case type ((short) "2") ((int) "4") ((long) "8") (else "0")) ";")
+                    (indent-line (+ indent 2) "}")))
+               (indent-line indent "}")))
+             ((eq? type 'string)
+              (string-append
+               (indent-line indent "if (" accessor " != NULL) {")
+               (indent-line (+ indent 2) "size += 2 + 4 + strlen(" accessor ");")
+               (indent-line indent "}")))
+             (else
+              (string-append
+               (indent-line indent "if (" accessor " != NULL) {")
+               (indent-line (+ indent 2) "size += 2 + 4 + " (>clang-name (symbol->string type)) "_calculate_size(" accessor ");")
+               (indent-line indent "}"))))))))
+
+  (define (generate-clang-calculate-size sname fields)
+    (string-append
+     (indent-line 0 "int " sname "_calculate_size(" (>clang-struct-name sname) " * " sname ") {")
+     (indent-line 2 "int size = 2;")
+     (strcat (map (lambda (x) (generate-clang-calculate-size-recursive sname x 2)) fields))
+     (indent-line 0 "}")))
+
   (define (generate-clang-serial env struct dir)
     (let ((name (>clang-name (struct-name struct)))
           (fields (struct-fields struct)))
-      '()))
+      (let ((includes (string-append "#include <stdlib.h>\n#include <string.h>\n#include \"" name ".h\"\n"))
+            (calcsize (generate-clang-calculate-size name fields)))
+        (with-output-to-file
+            (string-append dir name ".c")
+          (lambda ()
+            (write-string (string-append includes calcsize)))
+          (list 'replace)))))
 
   (define (generate-clang-serials env dir)
     (let ((path dir))
@@ -283,4 +349,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
       ((long) "int64_t")
       ((string) "char *")
       (else (>clang-struct-name (symbol->string type)))))
+
+  (define (>clang-accessor sname name)
+    (string-append (>clang-name sname) "->" (>clang-name name)))
 #+end_src
