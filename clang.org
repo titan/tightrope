@@ -557,6 +557,93 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
             (indent-line 2 sname "_set__fields(" sname ", buf, NULL, NULL);")))
        (indent-line 0 "}"))))
 #+end_src
+*** 预估解码大小
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
+  (define (generate-clang-estimate-size-action field indent)
+    (let ((tag (number->string (field-tag field)))
+          (type (field-type field)))
+      (string-append
+       (indent-line indent "case " tag ": {")
+       (indent-line (+ indent 2) "int s = INT(buf + ptr);")
+       (if (array-type? type)
+           (let ((base-type (array-base-type type)))
+             (case base-type
+               ((byte short int long)
+                (string-append
+                 (indent-line (+ indent 2) "size += s;")
+                 (indent-line (+ indent 2) "ptr += 4 + s;")))
+               ((string)
+                (string-append
+                 (indent-line (+ indent 2) "int count = INT(buf + ptr + 4);")
+                 (indent-line (+ indent 2) "int tmp = ptr + 8; ")
+                 (indent-line (+ indent 2) "for (int j = 0; j < count; j ++) {")
+                 (indent-line (+ indent 4) "int l = INT(buf + tmp);")
+                 (indent-line (+ indent 4) "size += l + 1;")
+                 (indent-line (+ indent 4) "tmp += l;")
+                 (indent-line (+ indent 2) "}")
+                 (indent-line (+ indent 2) "ptr += 4 + s;")))
+               (else
+                (string-append
+                 (indent-line (+ indent 2) "int count = INT(buf + ptr + 4);")
+                 (indent-line (+ indent 2) "int tmp = ptr + 8; ")
+                 (indent-line (+ indent 2) "for (int j = 0; j < count; j ++) {")
+                 (indent-line (+ indent 4) "int l = INT(buf + tmp); ")
+                 (indent-line (+ indent 4) "size += " (>clang-name (symbol->string base-type)) "_estimate_size(buf + tmp + 4);")
+                 (indent-line (+ indent 4) "tmp += l;")
+                 (indent-line (+ indent 2) "}")
+                 (indent-line (+ indent 2) "ptr += 4 + s;")))))
+           (case type
+             ((byte)
+              (indent-line (+ indent 2) "ptr += 4 + 1;"))
+             ((short)
+              (indent-line (+ indent 2) "ptr += 4 + 2;"))
+             ((int)
+              (indent-line (+ indent 2) "ptr += 4 + 4;"))
+             ((long)
+              (indent-line (+ indent 2) "ptr += 4 + 8;"))
+             ((string)
+              (string-append
+               (indent-line (+ indent 2) "size += s + 1;")
+               (indent-line (+ indent 2) "ptr += 4 + s;")))
+             (else
+              (string-append
+               (indent-line (+ indent 2) "size += " (>clang-name (symbol->string type)) "_estimate_size(buf + ptr + 4);")
+               (indent-line (+ indent 2) "ptr += 4 + s;")))))
+       (indent-line (+ indent 2) "break;")
+       (indent-line indent "}"))))
+
+  (define (generate-clang-estimate-size sname fields)
+    (string-append
+     (indent-line 0 "int " sname "_estimate_size(uint8_t * buf) {")
+     (indent-line 2 "int ptr = 0;")
+     (indent-line 2 "short tag = 0;")
+     (indent-line 2 "short dtags[" (number->string (length fields)) "];")
+     (indent-line 2 "int dlen = 0;")
+     (indent-line 2 "int size = sizeof(" (>clang-struct-name sname) ");")
+     (indent-line 2 "short count = SHORT(buf);")
+     (indent-line 2 "ptr += 2;")
+     (indent-line 2 "for (short i = 0; i < count; i ++) {")
+     (indent-line 4 "short value = SHORT(buf + ptr);")
+     (indent-line 4 "ptr += 2;")
+     (indent-line 4 "if ((value & 0x01) == 1) {")
+     (indent-line 6 "tag += (value - 1) >> 1;")
+     (indent-line 4 "} else if (value == 0) {")
+     (indent-line 6 "dtags[dlen ++] = tag;")
+     (indent-line 6 "tag ++;")
+     (indent-line 4 "} else {")
+     (indent-line 6 "tag ++;")
+     (indent-line 4 "}")
+     (indent-line 2 "}")
+     (indent-line 2 "for (int i = 0; i < dlen; i ++) {")
+     (indent-line 4 "switch (dtags[i]) {")
+     (strcat (map (lambda (x) (generate-clang-estimate-size-action x 4)) fields))
+     (indent-line 4 "default:")
+     (indent-line 6 "break;")
+     (indent-line 4 "}")
+     (indent-line 2 "}")
+     (indent-line 2 "return size;")
+     (indent-line 0 "}")))
+#+end_src
 *** 解碼器
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
 
@@ -627,11 +714,12 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
           (fields (struct-fields struct)))
       (let ((includes (string-append "#include <stdlib.h>\n#include <string.h>\n#include \"tightrope.h\"\n#include \"" name ".h\"\n"))
             (calcsize (generate-clang-calculate-size name fields))
-            (encoder (generate-clang-encoder name fields)))
+            (encoder (generate-clang-encoder name fields))
+            (estisize (generate-clang-estimate-size name fields)))
         (with-output-to-file
             (string-append dir name ".c")
           (lambda ()
-            (write-string (string-append includes calcsize encoder)))
+            (write-string (string-append includes calcsize encoder estisize)))
           (list 'replace)))))
 
   (define (generate-clang-serials env dir)
