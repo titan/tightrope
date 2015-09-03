@@ -17,14 +17,20 @@
     (let ((name (>clang-name (field-name field)))
           (type (field-type field)))
       (if (array-type? type)
-          (string-append (>clang-type (array-base-type type)) (if (custom-type? type) "*" " ") "* " name ";\n    int __" name "_len;")
-          (string-append (>clang-type type) (if (custom-type? type) "*" " ") name ";"))))
+          (let ((base-type (array-base-type type)))
+            (string-append (>clang-type base-type) (if (custom-type? base-type) " *" " ") "* " name ";\n    int __" name "_len;"))
+          (string-append (>clang-type type) (if (custom-type? type) " * " " ") name ";"))))
 
-  (define (generate-clang-field-setter-declare struct-name field)
+  (define (generate-clang-field-setter-declare struct-name field indent)
     (let ((name (>clang-name (field-name field)))
           (type (field-type field)))
       (if (array-type? type)
-          (string-append "void " struct-name "_set_" name "(" (>clang-struct-name struct-name) " *, " (>clang-type (array-base-type type)) " *, int);")
+          (let ((base-type (array-base-type type)))
+            (string-append
+             (indent-line indent "inline void " struct-name "_set_" name "(" (>clang-struct-name struct-name) " * " struct-name ", " (>clang-type base-type) (if (custom-type? base-type) " ** " " * ") name ", int len) {")
+             (indent-line (+ indent 2) struct-name "->" name " = " name ";")
+             (indent-line (+ indent 2) struct-name "->__" name "_len = len;")
+             (indent-line indent "}")))
           "")))
 
   (define (generate-clang-entity struct dir)
@@ -34,7 +40,7 @@
             (includes (strcat (map generate-clang-include fields)))
             (sname (>clang-struct-name name))
             (field-decls (strcat (map (lambda (x) (indent-line 4 (generate-clang-field-declare x))) fields)))
-            (setters (strcat (map (lambda (x) (indent-line 2 (generate-clang-field-setter-declare name x))) (filter (lambda (y) (array-type? (field-type y))) fields)))))
+            (setters (strcat (map (lambda (x) (generate-clang-field-setter-declare name x 2)) (filter (lambda (y) (array-type? (field-type y))) fields)))))
         (let ((content
                (string-append
                 (indent-line 0 "#ifndef " macro-name)
