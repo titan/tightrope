@@ -240,7 +240,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
 #+end_src
 
 ** 序列化與反序列化
-
+*** 計算編碼大小
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
   (define (generate-clang-calculate-size-recursive sname field indent)
     (let ((type (field-type field))
@@ -275,14 +275,12 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
              ((primitive-type? type)
               (string-append
                (indent-line indent "if (" accessor " != 0) {")
-               (if (eq? type 'byte)
-                   (indent-line (+ indent 2) "size += 2;")
-                   (string-append
-                    (indent-line (+ indent 2) "if (" accessor " > 0 && " accessor " < 16383) {")
-                    (indent-line (+ indent 4) "size += 2;")
-                    (indent-line (+ indent 2) "} else {")
-                    (indent-line (+ indent 4) "size += 2 + 4 + " (case type ((short) "2") ((int) "4") ((long) "8") (else "0")) ";")
-                    (indent-line (+ indent 2) "}")))
+               (string-append
+                (indent-line (+ indent 2) "if (" accessor " > 0 && " accessor " < 16383) {")
+                (indent-line (+ indent 4) "size += 2;")
+                (indent-line (+ indent 2) "} else {")
+                (indent-line (+ indent 4) "size += 2 + 4 + " (case type ((byte) "1") ((short) "2") ((int) "4") ((long) "8") (else "0")) ";")
+                (indent-line (+ indent 2) "}"))
                (indent-line indent "}")))
              ((eq? type 'string)
               (string-append
@@ -301,22 +299,340 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
      (indent-line 2 "int size = 2;")
      (strcat (map (lambda (x) (generate-clang-calculate-size-recursive sname x 2)) fields))
      (indent-line 0 "}")))
+#+end_src
+*** 編碼器
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
+  (define (generate-clang-set-field-action sname field indent)
+    (let ((type (field-type field))
+          (tag (number->string (field-tag field)))
+          (name (>clang-name (field-name field))))
+      (let ((accessor (>clang-accessor sname name)))
+        (string-append
+         (indent-line indent "case " tag ":")
+         (if (primitive-type? type)
+             (string-append
+              (indent-line (+ indent 2) "if (" accessor " != 0) {")
+              (indent-line (+ indent 4) "count ++;")
+              (indent-line (+ indent 4) "ptr += tightrope_padding(tag, nexttag, buf + ptr, &count);")
+              (if (eq? type 'byte)
+                  (string-append
+                   (indent-line (+ indent 4) "short t = (short) ((" accessor " + 1) * 2);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = SHORT0(t);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = SHORT1(t);"))
+                  (string-append
+                   (indent-line (+ indent 4) "if (" accessor " > 0 && " accessor " < 16383) {")
+                   (indent-line (+ indent 6) "short t = (short) ((" accessor " + 1) * 2);")
+                   (indent-line (+ indent 6) "buf[ptr ++] = SHORT0(t);")
+                   (indent-line (+ indent 6) "buf[ptr ++] = SHORT1(t);")
+                   (indent-line (+ indent 4) "} else {")
+                   (indent-line (+ indent 6) "buf[ptr ++] = 0;")
+                   (indent-line (+ indent 6) "buf[ptr ++] = 0;")
+                   (indent-line (+ indent 4) "}")))
+              (indent-line (+ indent 4) "tag = nexttag + 1;")
+              (indent-line (+ indent 2) "}"))
+             (string-append
+              (indent-line (+ indent 2) "if (" accessor " != NULL) {")
+              (indent-line (+ indent 4) "dtags[* dlen] = " tag ";")
+              (indent-line (+ indent 4) "(* dlen) ++;")
+              (indent-line (+ indent 4) "count ++;")
+              (indent-line (+ indent 4) "ptr += tightrope_padding(tag, nexttag, buf + ptr, &count);")
+              (indent-line (+ indent 4) "buf[ptr ++] = 0;")
+              (indent-line (+ indent 4) "buf[ptr ++] = 0;")
+              (indent-line (+ indent 4) "tag = nexttag + 1;")
+              (indent-line (+ indent 2) "}")))
+         (indent-line indent "break;")))))
+
+  (define (generate-clang-set-fields sname fields)
+    (let ((max-tag (number->string (apply max (map (lambda(x) (field-tag x)) fields)))))
+      (string-append
+       (indent-line 0 "static int " sname "_set__fields(" (>clang-struct-name sname) " * " sname ", unsigned char * buf, short * dtags, int * dlen) {")
+       (indent-line 2 "int ptr = 2;")
+       (indent-line 2 "short count = 0;")
+       (indent-line 2 "for (short tag = 0, nexttag = 0; nexttag < " max-tag "; nexttag ++) {")
+       (indent-line 4 "switch (nexttag) {")
+       (strcat (map (lambda (x) (generate-clang-set-field-action sname x 4)) fields))
+       (indent-line 4 "default:")
+       (indent-line 6 "break;")
+       (indent-line 4 "}")
+       (indent-line 2 "}")
+       (indent-line 2 "buf[0] = SHORT0(count);")
+       (indent-line 2 "buf[0] = SHORT1(count);")
+       (indent-line 2 "return ptr;")
+       (indent-line 0 "}"))))
+
+  (define (generate-clang-set-data-action sname field indent)
+    (let ((tag (number->string (field-tag field)))
+          (type (field-type field))
+          (name (>clang-name (field-name field))))
+      (let ((accessor (>clang-accessor sname name))
+            (len-accessor (>clang-accessor sname (string-append "__" name "_len"))))
+        (string-append
+         (indent-line indent "case " tag ": {")
+         (if (array-type? type)
+             (let ((base-type (array-base-type type)))
+               (case base-type
+                 ((byte)
+                  (string-append
+                   (indent-line (+ indent 2) "size = " len-accessor ";")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT0(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT1(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT2(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT3(size);")
+                   (indent-line (+ indent 2) "for (int j = 0; j < " len-accessor "; j ++) {")
+                   (indent-line (+ indent 4) "buf[ptr ++] = " accessor "[j];")
+                   (indent-line (+ indent 2) "}")))
+                 ((short)
+                  (string-append
+                   (indent-line (+ indent 2) "size = " len-accessor " * 2;")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT0(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT1(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT2(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT3(size);")
+                   (indent-line (+ indent 2) "for (int j = 0; j < " len-accessor "; j ++) {")
+                   (indent-line (+ indent 4) "buf[ptr ++] = SHORT0(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = SHORT1(" accessor "[j]);")
+                   (indent-line (+ indent 2) "}")))
+                 ((int)
+                  (string-append
+                   (indent-line (+ indent 2) "size = " len-accessor " * 4;")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT0(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT1(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT2(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT3(size);")
+                   (indent-line (+ indent 2) "for (int j = 0; j < " len-accessor "; j ++) {")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT0(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT1(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT2(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT3(" accessor "[j]);")
+                   (indent-line (+ indent 2) "}")))
+                 ((long)
+                  (string-append
+                   (indent-line (+ indent 2) "size = " len-accessor " * 8;")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT0(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT1(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT2(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT3(size);")
+                   (indent-line (+ indent 2) "for (int j = 0; j < " len-accessor "; j ++) {")
+                   (indent-line (+ indent 4) "buf[ptr ++] = LONG0(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = LONG1(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = LONG2(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = LONG3(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = LONG4(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = LONG5(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = LONG6(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = LONG7(" accessor "[j]);")
+                   (indent-line (+ indent 2) "}")))
+                 ((string)
+                  (string-append
+                   (indent-line (+ indent 2) "size = 0;")
+                   (indent-line (+ indent 2) "for (int j = 0; j < " len-accessor "; j ++) {")
+                   (indent-line (+ indent 4) "size += strlen(" accessor "[j]);")
+                   (indent-line (+ indent 2) "}")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT0(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT1(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT2(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT3(size);")
+                   (indent-line (+ indent 2) "for (int j = 0; j < " len-accessor "; j ++) {")
+                   (indent-line (+ indent 4) "int len = strlen(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT0(len);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT1(len);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT2(len);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT3(len);")
+                   (indent-line (+ indent 4) "memcpy(buf + ptr, " accessor "[j], len);")
+                   (indent-line (+ indent 4) "ptr += len;")
+                   (indent-line (+ indent 2) "}")))
+                 (else
+                  (string-append
+                   (indent-line (+ indent 2) "size = 0;")
+                   (indent-line (+ indent 2) "for (int j = 0; j < " len-accessor "; j ++) {")
+                   (indent-line (+ indent 4) "size += " (>clang-name (symbol->string base-type)) "_calculate_size(" accessor "[j]);")
+                   (indent-line (+ indent 2) "}")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT0(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT1(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT2(size);")
+                   (indent-line (+ indent 2) "buf[ptr ++] = INT3(size);")
+                   (indent-line (+ indent 2) "for (int j = 0; j < " len-accessor "; j ++) {")
+                   (indent-line (+ indent 4) "int len = " (>clang-name (symbol->string base-type)) "_calculate_size(" accessor "[j]);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT0(len);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT1(len);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT2(len);")
+                   (indent-line (+ indent 4) "buf[ptr ++] = INT3(len);")
+                   (indent-line (+ indent 4) (>clang-name (symbol->string base-type)) "_encode(" accessor "[j], buf + ptr);")
+                   (indent-line (+ indent 4) "ptr += len;")
+                   (indent-line (+ indent 2) "}")))))
+             (case type
+               ((byte)
+                (string-append
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 1;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = " accessor ";")))
+               ((short)
+                (string-append
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 2;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = SHORT0(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = SHORT1(" accessor ");")))
+               ((int)
+                (string-append
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 4;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT0(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT1(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT2(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT3(" accessor ");")))
+               ((long)
+                (string-append
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 0;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = 8;")
+                 (indent-line (+ indent 2) "buf[ptr ++] = LONG0(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = LONG1(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = LONG2(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = LONG3(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = LONG4(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = LONG5(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = LONG6(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = LONG7(" accessor ");")))
+               ((string)
+                (string-append
+                 (indent-line (+ indent 2) "size = strlen(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT0(size);")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT1(size);")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT2(size);")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT3(size);")
+                 (indent-line (+ indent 2) "memcpy(buf + ptr, " accessor ", size);")
+                 (indent-line (+ indent 2) "ptr += size;")))
+               (else
+                (string-append
+                 (indent-line (+ indent 2) "size = " (>clang-name (symbol->string type)) "_calculate_size(" accessor ");")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT0(size);")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT1(size);")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT2(size);")
+                 (indent-line (+ indent 2) "buf[ptr ++] = INT3(size);")
+                 (indent-line (+ indent 2) (>clang-name (symbol->string type)) "_encode(" accessor ", buf + ptr);")
+                 (indent-line (+ indent 2) "ptr += size;")))))
+         (indent-line (+ indent 2) "break;")
+         (indent-line indent "}")))))
+
+  (define (generate-clang-set-data sname fields)
+    (string-append
+     (indent-line 0 "static void " sname "_set__data(" (>clang-struct-name sname) " * " sname ", unsigned char * buf, short * dtags, int dlen) {")
+     (indent-line 2 "int ptr = 0;")
+     (indent-line 2 "int size = 0;")
+     (indent-line 2 "for (int i = 0; i < dlen; i ++) {")
+     (indent-line 4 "switch (dtags[i]) {")
+     (strcat (map (lambda (x) (generate-clang-set-data-action sname x 4)) fields))
+     (indent-line 4 "default:")
+     (indent-line 6 "break;")
+     (indent-line 4 "}")
+     (indent-line 2 "}")
+     (indent-line 0 "}")))
+
+  (define (generate-clang-encoder sname fields)
+    (let ((none-byte-type-count (length (filter (lambda (x) (not (eq? 'byte (field-type x)))) fields))))
+      (string-append
+       (generate-clang-set-fields sname fields)
+       (generate-clang-set-data sname fields)
+       (indent-line 0 "void " sname "_encode(" (>clang-struct-name sname)" * " sname ", unsigned char * buf) {")
+       (if (> none-byte-type-count 0)
+           (string-append
+            (indent-line 2 "short dtags[" (number->string none-byte-type-count) "];")
+            (indent-line 2 "int dlen = 0;")
+            (indent-line 2 "int ptr = " sname "_set__fields(" sname ", buf, dtags, &dlen);")
+            (indent-line 2 sname "_set__data(" sname ", buf + ptr, dtags, dlen);"))
+           (string-append
+            (indent-line 2 sname "_set__fields(" sname ", buf, NULL, NULL);")))
+       (indent-line 0 "}"))))
+#+end_src
+*** 解碼器
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
+
+#+end_src
+*** 主體
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
+  (define (generate-clang-tightrope-runtime-header path)
+    (let ((src "#ifndef _TIGHTROPE_H
+  #define _TIGHTROPE_H
+  #include <stdint.h>
+
+  #define SHORT(x) ((((int16_t)((uint8_t)(x)[0]) << 8) & 0xFF00) | (((int16_t)((uint8_t)(x)[1])) & 0xFF))
+  #define SHORT0(x) (uint8_t)(((x) >> 8) & 0xFF)
+  #define SHORT1(x) (uint8_t)((x) & 0xFF)
+
+  #define INT(x) ((((int32_t)((uint8_t)(x)[0]) << 24) & 0xFF000000) | (((int32_t)((uint8_t)(x)[1]) << 16) & 0xFF0000) | (((int32_t)((uint8_t)(x)[2]) << 8) & 0xFF00) | (((int32_t)((uint8_t)(x)[3])) & 0xFF))
+  #define INT0(x) (uint8_t)(((x) >> 24) & 0xFF)
+  #define INT1(x) (uint8_t)(((x) >> 16) & 0xFF)
+  #define INT2(x) (uint8_t)(((x) >> 8) & 0xFF)
+  #define INT3(x) (uint8_t)((x) & 0xFF)
+
+  #define LONG(x) ((((int64_t)((uint8_t)(x)[0]) << 56) & 0xFF00000000000000) | (((int64_t)((uint8_t)(x)[1]) << 48) & 0x00FF000000000000) | (((int64_t)((uint8_t)(x)[2]) << 40) & 0x0000FF0000000000) | (((int64_t)((uint8_t)(x)[3]) << 32) & 0x000000FF00000000) | (((int64_t)((uint8_t)(x)[4]) << 24) & 0x00000000FF000000) | (((int64_t)((uint8_t)(x)[5]) << 16) & 0x0000000000FF0000) | (((int64_t)((uint8_t)(x)[6]) << 08) & 0x000000000000FF00) | (((int64_t)((uint8_t)(x)[7])) & 0x00000000000000FF))
+  #define LONG0(x) (uint8_t)(((x) >> 56) & 0xFF)
+  #define LONG1(x) (uint8_t)(((x) >> 48) & 0xFF)
+  #define LONG2(x) (uint8_t)(((x) >> 40) & 0xFF)
+  #define LONG3(x) (uint8_t)(((x) >> 32) & 0xFF)
+  #define LONG4(x) (uint8_t)(((x) >> 24) & 0xFF)
+  #define LONG5(x) (uint8_t)(((x) >> 16) & 0xFF)
+  #define LONG6(x) (uint8_t)(((x) >> 8) & 0xFF)
+  #define LONG7(x) (uint8_t)((x) & 0xFF)
+
+  int tightrope_padding(short tag, short nexttag, uint8_t * buf, short * count);
+  #endif
+  "))
+      (with-output-to-file
+          (string-append path "tightrope.h")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-clang-tightrope-runtime-source path)
+    (let ((src "#include \"tightrope.h\"
+
+  int tightrope_padding(short tag, short nexttag, uint8_t * buf, short * count) {
+    if (tag == nexttag) {
+      return 0;
+    } else {
+      short t = (nexttag - tag) * 2 + 1;
+      buf[0] = SHORT0(t);
+      buf[1] = SHORT1(t);
+      ,* count += 1;
+      return 2;
+    }
+  }
+  "))
+      (with-output-to-file
+          (string-append path "tightrope.c")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-clang-tightrope-runtime path)
+    (generate-clang-tightrope-runtime-header path)
+    (generate-clang-tightrope-runtime-source path))
 
   (define (generate-clang-serial env struct dir)
     (let ((name (>clang-name (struct-name struct)))
           (fields (struct-fields struct)))
-      (let ((includes (string-append "#include <stdlib.h>\n#include <string.h>\n#include \"" name ".h\"\n"))
-            (calcsize (generate-clang-calculate-size name fields)))
+      (let ((includes (string-append "#include <stdlib.h>\n#include <string.h>\n#include \"tightrope.h\"\n#include \"" name ".h\"\n"))
+            (calcsize (generate-clang-calculate-size name fields))
+            (encoder (generate-clang-encoder name fields)))
         (with-output-to-file
             (string-append dir name ".c")
           (lambda ()
-            (write-string (string-append includes calcsize)))
+            (write-string (string-append includes calcsize encoder)))
           (list 'replace)))))
 
   (define (generate-clang-serials env dir)
     (let ((path dir))
       (if (and (> (string-length path) 0) (not (file-exists? path)))
           (mkdir-p path))
+      (generate-clang-tightrope-runtime path)
       (generate-clang-zero-pack env dir)
       (for-each
        (lambda (entity) (generate-clang-serial env entity path))
