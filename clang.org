@@ -542,20 +542,15 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
      (indent-line 0 "}")))
 
   (define (generate-clang-encoder sname fields)
-    (let ((none-byte-type-count (length (filter (lambda (x) (not (eq? 'byte (field-type x)))) fields))))
-      (string-append
-       (generate-clang-set-fields sname fields)
-       (generate-clang-set-data sname fields)
-       (indent-line 0 "void " sname "_encode(" (>clang-struct-name sname)" * " sname ", unsigned char * buf) {")
-       (if (> none-byte-type-count 0)
-           (string-append
-            (indent-line 2 "short dtags[" (number->string none-byte-type-count) "];")
-            (indent-line 2 "int dlen = 0;")
-            (indent-line 2 "int ptr = " sname "_set__fields(" sname ", buf, dtags, &dlen);")
-            (indent-line 2 sname "_set__data(" sname ", buf + ptr, dtags, dlen);"))
-           (string-append
-            (indent-line 2 sname "_set__fields(" sname ", buf, NULL, NULL);")))
-       (indent-line 0 "}"))))
+    (string-append
+     (generate-clang-set-fields sname fields)
+     (generate-clang-set-data sname fields)
+     (indent-line 0 "void " sname "_encode(" (>clang-struct-name sname)" * " sname ", unsigned char * buf) {")
+     (indent-line 2 "short dtags[" (number->string (length fields)) "];")
+     (indent-line 2 "int dlen = 0;")
+     (indent-line 2 "int ptr = " sname "_set__fields(" sname ", buf, dtags, &dlen);")
+     (indent-line 2 sname "_set__data(" sname ", buf + ptr, dtags, dlen);")
+     (indent-line 0 "}")))
 #+end_src
 *** 预估解码大小
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
