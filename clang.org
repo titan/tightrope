@@ -282,7 +282,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
               (string-append
                (indent-line indent "if (" accessor " != 0) {")
                (string-append
-                (indent-line (+ indent 2) "if (" accessor " > 0 && " accessor " < 16383) {")
+                (indent-line (+ indent 2) "if (" accessor " > 0" (if (eq? type 'byte) "" (string-append " && " accessor " < 16383")) ") {")
                 (indent-line (+ indent 4) "size += 2;")
                 (indent-line (+ indent 2) "} else {")
                 (indent-line (+ indent 4) "size += 2 + 4 + " (case type ((byte) "1") ((short) "2") ((int) "4") ((long) "8") (else "0")) ";")
@@ -320,20 +320,14 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
               (indent-line (+ indent 2) "if (" accessor " != 0) {")
               (indent-line (+ indent 4) "count ++;")
               (indent-line (+ indent 4) "ptr += tightrope_padding(tag, nexttag, buf + ptr, &count);")
-              (if (eq? type 'byte)
-                  (string-append
-                   (indent-line (+ indent 4) "short t = (short) ((" accessor " + 1) * 2);")
-                   (indent-line (+ indent 4) "buf[ptr ++] = SHORT0(t);")
-                   (indent-line (+ indent 4) "buf[ptr ++] = SHORT1(t);"))
-                  (string-append
-                   (indent-line (+ indent 4) "if (" accessor " > 0 && " accessor " < 16383) {")
-                   (indent-line (+ indent 6) "short t = (short) ((" accessor " + 1) * 2);")
-                   (indent-line (+ indent 6) "buf[ptr ++] = SHORT0(t);")
-                   (indent-line (+ indent 6) "buf[ptr ++] = SHORT1(t);")
-                   (indent-line (+ indent 4) "} else {")
-                   (indent-line (+ indent 6) "buf[ptr ++] = 0;")
-                   (indent-line (+ indent 6) "buf[ptr ++] = 0;")
-                   (indent-line (+ indent 4) "}")))
+              (indent-line (+ indent 4) "if (" accessor " > 0" (if (eq? type 'byte) "" (string-append " && " accessor " < 16383")) ") {")
+              (indent-line (+ indent 6) "short t = (short) ((" accessor " + 1) * 2);")
+              (indent-line (+ indent 6) "buf[ptr ++] = SHORT0(t);")
+              (indent-line (+ indent 6) "buf[ptr ++] = SHORT1(t);")
+              (indent-line (+ indent 4) "} else {")
+              (indent-line (+ indent 6) "buf[ptr ++] = 0;")
+              (indent-line (+ indent 6) "buf[ptr ++] = 0;")
+              (indent-line (+ indent 4) "}")
               (indent-line (+ indent 4) "tag = nexttag + 1;")
               (indent-line (+ indent 2) "}"))
              (string-append
