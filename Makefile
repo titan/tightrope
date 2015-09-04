@@ -3,6 +3,7 @@ BUILDDIR:=/dev/shm/$(NAME)-build
 TARGET:=$(BUILDDIR)/$(NAME)
 DOCUMENT:=$(BUILDDIR)/$(NAME).pdf
 DOCSRC:=$(BUILDDIR)/$(NAME).org
+PNGS+=$(patsubst ./%,$(BUILDDIR)/%,$(patsubst %.aa,%.png,$(shell find . -name "*.aa")))
 
 CAT:=cat
 CHMOD:=chmod
@@ -21,8 +22,8 @@ ifeq "$(wildcard $(BUILDDIR))" ""
 	@mkdir -p $(BUILDDIR)
 endif
 
-$(DOCUMENT): $(DOCSRC) $(HOME)/templates/pandoc-template.tex $(HOME)/templates/style.sty
-	pandoc -H $(HOME)/templates/style.sty --latex-engine=xelatex --template=$(HOME)/templates/pandoc-template.tex -f org -o $@ $(DOCSRC)
+$(DOCUMENT): $(DOCSRC) $(HOME)/templates/pandoc-template.tex $(HOME)/templates/style.sty $(PNGS)
+	cd $(BUILDDIR);pandoc -H $(HOME)/templates/style.sty --latex-engine=xelatex --template=$(HOME)/templates/pandoc-template.tex -f org -o $@ $(DOCSRC)
 
 $(DOCSRC): prebuild | core.org java.org erlang.org clang.org
 	$(CAT) core.org java.org erlang.org clang.org > $(DOCSRC)
@@ -33,6 +34,9 @@ $(TARGET): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BU
 	$(ECHO) "(main (command-line))" >> $(TARGET)
 	$(SED) -i -r '/\(load \".*\"\)/d' $(TARGET)
 	$(CHMOD) 755 $(TARGET)
+
+$(BUILDDIR)/%.png: %.aa | prebuild
+	java -jar /opt/ditaa0_9.jar -e utf-8 -s 1.0 $< $@
 
 $(BUILDDIR)/core.scm $(BUILDDIR)/main.scm: core.org | prebuild
 	emacs $< --batch -f org-babel-tangle --kill

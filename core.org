@@ -77,8 +77,47 @@ struct 中的每個字段都有一個編號，範圍是 [0, 65535]。不要求�
 (v - 1) / 2 + 1，並繼續處理下一個字段值。如果一個字段爲零，則表示這個字段引用後
 面的數據塊。如果一個字段是偶數且不爲零，則這個字段的值爲 v / 2 - 1。
 
-接下來是被引用的數據塊。它由一個 dword 長度 + 字節串構成。通常用來表示大於 32767
-的整數和負整數，數組或結構。數組的編碼方式是把同一類型的數據依次打包成數據塊。
+接下來是被引用的數據塊。它由一個 dword 長度 + 字節串構成。通常用來表示大於 16383
+的整數和負整數，數組或結構。
+
+| type   | layout           |
+|--------+------------------|
+| byte   | uint32 + byte    |
+| short  | uint32 + byte[2] |
+| int    | uint32 + byte[4] |
+| long   | uint32 + byte[8] |
+| string | uint32 + char *  |
+| struct | uint32 + byte *  |
+
+數組的編碼方式是把同一類型的數據依次打包成數據塊。對於 byte, short, int, long 這
+類定長類型數組，採用如下的數據塊佈局方式：
+
+#+CAPTION: 定長類型數組佈局方式圖
+#+LABEL: fig:fixed-type-array-layout
+[[fixed-type-array-layout.png]]
+
+size 記錄的並非數組的長度，而是以字節(byte)爲單位，數組內容的長度。比如，長度爲
+5 的 byte 數組，其 size 的值是 5；而長度爲 5 的 long 數組，其 size 的值爲 40 。
+
+| base type | array length | size  |
+|-----------+--------------+-------|
+| byte      | n            | n     |
+| short     | n            | n * 2 |
+| int       | n            | n * 4 |
+| long      | n            | n * 8 |
+
+對於 string 數組和自定義結構數組這類變長的數據結構，採用如下的數據塊佈局方式：
+
+#+CAPTION: 變長類型數組佈局方式圖
+#+LABEL: fig:flexible-type-array-layout
+[[flexible-type-array-layout.png]]
+
+| field     | meaning                                      |
+|-----------+----------------------------------------------|
+| size      | 以 byte 爲單位的整個數據區大小，包括 count。 |
+| count     | 數組元素的個數(數組的長度)                   |
+| length(m) | 第 m 號元素的長度(以 byte 爲單位)            |
+| data(m)   | 第 m 號元素的字節數組表示                    |
 
 * 壓縮算法
 
