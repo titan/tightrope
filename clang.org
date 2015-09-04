@@ -1,6 +1,5 @@
 * c 後端實現
 
-正在進行中。
 ** 實體對象
 在 Tightrope C 實現中，用結構體來實現數據結構，實體對象的名稱遵循 C 語言的命名規
 則，以 "_t" 結尾。實體對象的定義保存在對應的頭文件中，方便各個模塊調用。
@@ -55,9 +54,9 @@
                 field-decls
                 (indent-line 2 "};")
                 (indent-line 2 "int " name "_calculate_size(" sname " *);")
-                (indent-line 2 "void " name "_encode(" sname " *, unsigned char *);")
-                (indent-line 2 "int " name "_estimate_size(unsigned char *);")
-                (indent-line 2 "void " name "_decode(unsigned char *, " sname " *);")
+                (indent-line 2 "void " name "_encode(" sname " *, uint8_t *);")
+                (indent-line 2 "int " name "_estimate_size(uint8_t *);")
+                (indent-line 2 "void " name "_decode(uint8_t *, " sname " *);")
                 setters
                 (indent-line 0 "#ifdef __cplusplus")
                 (indent-line 0 "}")
@@ -85,11 +84,12 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
   (define (generate-clang-zero-pack-header path)
     (let ((src "#ifndef _ZEROPACK_H
   #define _ZEROPACK_H
+  #include <stdint.h>
   #ifdef __cplusplus
   extern \"C\" {
   #endif
-    int zeropack(unsigned char * src, int len, unsigned char * dst);
-    int zerounpack(unsigned char * src, int len, unsigned char * dst);
+    int zeropack(uint8_t * src, int len, uint8_t * dst);
+    int zerounpack(uint8_t * src, int len, uint8_t * dst);
   #ifdef __cplusplus
   }
   #endif
@@ -104,17 +104,17 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     (let ((src "#include <string.h>
   #include \"zeropack.h\"
 
-  int zeropack(unsigned char * src, int len, unsigned char * dst) {
-    unsigned char ffcnt = 0;
+  int zeropack(uint8_t * src, int len, uint8_t * dst) {
+    uint8_t ffcnt = 0;
     int ffpos = 0;
-    unsigned char oocnt = 0;
+    uint8_t oocnt = 0;
     int oopos = 0;
     int ptr = 1;
-    unsigned char bytes[0];
+    uint8_t bytes[0];
     int bptr = 0;
-    unsigned char bitmap = 0;
+    uint8_t bitmap = 0;
     int blen = len + ((len % 8) != 0 ? (8 - len % 8): 0);
-    unsigned char buf[blen];
+    uint8_t buf[blen];
     memset(buf, 0, blen);
     memcpy(buf, src, len);
     for (int i = 0, l = blen / 8; i < l; i ++) {
@@ -188,7 +188,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     return ptr;
   }
 
-  int zerounpack(unsigned char * src, int len, unsigned char * dst) {
+  int zerounpack(uint8_t * src, int len, uint8_t * dst) {
     int sptr = 1;
     int dptr = 0;
     int cnt = 0;
@@ -346,7 +346,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
   (define (generate-clang-set-fields sname fields)
     (let ((max-tag (number->string (apply max (map (lambda(x) (field-tag x)) fields)))))
       (string-append
-       (indent-line 0 "static int " sname "_set__fields(" (>clang-struct-name sname) " * " sname ", unsigned char * buf, short * dtags, int * dlen) {")
+       (indent-line 0 "static int " sname "_set__fields(" (>clang-struct-name sname) " * " sname ", uint8_t * buf, short * dtags, int * dlen) {")
        (indent-line 2 "int ptr = 2;")
        (indent-line 2 "short count = 0;")
        (indent-line 2 "for (short tag = 0, nexttag = 0; nexttag < " max-tag "; nexttag ++) {")
@@ -524,7 +524,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
 
   (define (generate-clang-set-data sname fields)
     (string-append
-     (indent-line 0 "static void " sname "_set__data(" (>clang-struct-name sname) " * " sname ", unsigned char * buf, short * dtags, int dlen) {")
+     (indent-line 0 "static void " sname "_set__data(" (>clang-struct-name sname) " * " sname ", uint8_t * buf, short * dtags, int dlen) {")
      (indent-line 2 "int ptr = 0;")
      (indent-line 2 "int size = 0;")
      (indent-line 2 "for (int i = 0; i < dlen; i ++) {")
@@ -540,7 +540,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     (string-append
      (generate-clang-set-fields sname fields)
      (generate-clang-set-data sname fields)
-     (indent-line 0 "void " sname "_encode(" (>clang-struct-name sname)" * " sname ", unsigned char * buf) {")
+     (indent-line 0 "void " sname "_encode(" (>clang-struct-name sname)" * " sname ", uint8_t * buf) {")
      (indent-line 2 "short dtags[" (number->string (length fields)) "];")
      (indent-line 2 "int dlen = 0;")
      (indent-line 2 "int ptr = " sname "_set__fields(" sname ", buf, dtags, &dlen);")
@@ -805,7 +805,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     (string-append
      (generate-clang-parse-fields sname fields)
      (generate-clang-parse-data sname fields)
-     (indent-line 0 "void " sname "_decode(unsigned char * buf, " (>clang-struct-name sname)" * " sname ") {")
+     (indent-line 0 "void " sname "_decode(uint8_t * buf, " (>clang-struct-name sname)" * " sname ") {")
      (indent-line 2 "short dtags[" (number->string (length fields)) "];")
      (indent-line 2 "int dlen = 0;")
      (indent-line 2 "int ptr = " sname "_parse_fields(buf, " sname ", dtags, &dlen);")
