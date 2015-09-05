@@ -250,7 +250,8 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
   (define (generate-clang-calculate-size-recursive sname field indent)
     (let ((type (field-type field))
-          (name (>clang-name (field-name field))))
+          (name (>clang-name (field-name field)))
+          (tag (number->string (field-tag field))))
       (let ((accessor (>clang-accessor sname name))
             (len-accessor (>clang-accessor sname (string-append "__" name "_len"))))
         (if (array-type? type)
@@ -259,11 +260,13 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
                ((primitive-type? base-type)
                 (string-append
                  (indent-line indent "if (" accessor " != NULL) {")
+                 (indent-line (+ indent 2) "tags[len ++] = " tag ";")
                  (indent-line (+ indent 2) "size += 2 + 4 + " len-accessor " * " (case base-type ((short) "2") ((int) "4") ((long) "8") (else "1")) ";")
                  (indent-line indent "}")))
                ((eq? base-type 'string)
                 (string-append
                  (indent-line indent "if (" accessor " != NULL) {")
+                 (indent-line (+ indent 2) "tags[len ++] = " tag ";")
                  (indent-line (+ indent 2) "size += 2 + 4 + 4;")
                  (indent-line (+ indent 2) "for (int i = 0; i < " len-accessor "; i ++) {")
                  (indent-line (+ indent 4) "size += 4 + strlen(" accessor "[i]);")
@@ -272,6 +275,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
                (else
                 (string-append
                  (indent-line indent "if (" accessor " != NULL) {")
+                 (indent-line (+ indent 2) "tags[len ++] = " tag ";")
                  (indent-line (+ indent 2) "size += 2 + 4 + 4;")
                  (indent-line (+ indent 2) "for (int i = 0; i < " len-accessor "; i ++) {")
                  (indent-line (+ indent 4) "size += 4 + " (>clang-name (symbol->string base-type)) "_calculate_size(" accessor "[i]);")
@@ -282,6 +286,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
               (string-append
                (indent-line indent "if (" accessor " != 0) {")
                (string-append
+                (indent-line (+ indent 2) "tags[len ++] = " tag ";")
                 (indent-line (+ indent 2) "if (" accessor " > 0" (if (eq? type 'byte) "" (string-append " && " accessor " < 16383")) ") {")
                 (indent-line (+ indent 4) "size += 2;")
                 (indent-line (+ indent 2) "} else {")
@@ -291,11 +296,13 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
              ((eq? type 'string)
               (string-append
                (indent-line indent "if (" accessor " != NULL) {")
+               (indent-line (+ indent 2) "tags[len ++] = " tag ";")
                (indent-line (+ indent 2) "size += 2 + 4 + strlen(" accessor ");")
                (indent-line indent "}")))
              (else
               (string-append
                (indent-line indent "if (" accessor " != NULL) {")
+               (indent-line (+ indent 2) "tags[len ++] = " tag ";")
                (indent-line (+ indent 2) "size += 2 + 4 + " (>clang-name (symbol->string type)) "_calculate_size(" accessor ");")
                (indent-line indent "}"))))))))
 
@@ -303,7 +310,17 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     (string-append
      (indent-line 0 "int " sname "_calculate_size(" (>clang-struct-name sname) " * " sname ") {")
      (indent-line 2 "int size = 2;")
+     (indent-line 2 "short tags[" (number->string (length fields)) "];")
+     (indent-line 2 "int len = 0;")
      (strcat (map (lambda (x) (generate-clang-calculate-size-recursive sname x 2)) fields))
+     (indent-line 2 "if (len > 0) {")
+     (indent-line 4 "if (tags[0] != 0) {")
+     (indent-line 6 "size += 2;")
+     (indent-line 4 "}")
+     (indent-line 4 "for (int i = 1; i < len; i ++) {")
+     (indent-line 6 "if (tags[i - 1] + 1 != tags[i]) size += 2;")
+     (indent-line 4 "}")
+     (indent-line 2 "}")
      (indent-line 2 "return size;")
      (indent-line 0 "}")))
 #+end_src
