@@ -26,7 +26,7 @@
       (if (array-type? type)
           (let ((base-type (array-base-type type)))
             (string-append
-             (indent-line indent "inline void " struct-name "_set_" name "(" (>clang-struct-name struct-name) " * " struct-name ", " (>clang-type base-type) (if (custom-type? base-type) " ** " " * ") name ", int len) {")
+             (indent-line indent "static inline void " struct-name "_set_" name "(" (>clang-struct-name struct-name) " * " struct-name ", " (>clang-type base-type) (if (custom-type? base-type) " ** " " * ") name ", int len) {")
              (indent-line (+ indent 2) struct-name "->" name " = " name ";")
              (indent-line (+ indent 2) struct-name "->__" name "_len = len;")
              (indent-line indent "}")))
@@ -93,7 +93,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
   #ifdef __cplusplus
   }
   #endif
-  #"))
+  #endif"))
       (with-output-to-file
           (string-append path "zeropack.h")
         (lambda ()
@@ -344,12 +344,12 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
          (indent-line indent "break;")))))
 
   (define (generate-clang-set-fields sname fields)
-    (let ((max-tag (number->string (apply max (map (lambda(x) (field-tag x)) fields)))))
+    (let ((max-tag+1 (number->string (+ (apply max (map (lambda(x) (field-tag x)) fields)) 1))))
       (string-append
        (indent-line 0 "static int " sname "_set__fields(" (>clang-struct-name sname) " * " sname ", uint8_t * buf, short * dtags, int * dlen) {")
        (indent-line 2 "int ptr = 2;")
        (indent-line 2 "short count = 0;")
-       (indent-line 2 "for (short tag = 0, nexttag = 0; nexttag < " max-tag "; nexttag ++) {")
+       (indent-line 2 "for (short tag = 0, nexttag = 0; nexttag < " max-tag+1 "; nexttag ++) {")
        (indent-line 4 "switch (nexttag) {")
        (strcat (map (lambda (x) (generate-clang-set-field-action sname x 4)) fields))
        (indent-line 4 "default:")
@@ -357,7 +357,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
        (indent-line 4 "}")
        (indent-line 2 "}")
        (indent-line 2 "buf[0] = SHORT0(count);")
-       (indent-line 2 "buf[0] = SHORT1(count);")
+       (indent-line 2 "buf[1] = SHORT1(count);")
        (indent-line 2 "return ptr;")
        (indent-line 0 "}"))))
 
@@ -814,7 +814,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
 #+end_src
 *** 主體
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/clang.scm
-  (define (generate-clang-tightrope-runtime-header path)
+  (define (generate-clang-tightrope-runtime path)
     (let ((src "#ifndef _TIGHTROPE_H
   #define _TIGHTROPE_H
   #include <stdint.h>
@@ -839,19 +839,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
   #define LONG6(x) (uint8_t)(((x) >> 8) & 0xFF)
   #define LONG7(x) (uint8_t)((x) & 0xFF)
 
-  int tightrope_padding(short tag, short nexttag, uint8_t * buf, short * count);
-  #endif
-  "))
-      (with-output-to-file
-          (string-append path "tightrope.h")
-        (lambda ()
-          (write-string src))
-        (list 'replace))))
-
-  (define (generate-clang-tightrope-runtime-source path)
-    (let ((src "#include \"tightrope.h\"
-
-  int tightrope_padding(short tag, short nexttag, uint8_t * buf, short * count) {
+  static inline int tightrope_padding(short tag, short nexttag, uint8_t * buf, short * count) {
     if (tag == nexttag) {
       return 0;
     } else {
@@ -862,16 +850,13 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
       return 2;
     }
   }
+  #endif
   "))
       (with-output-to-file
-          (string-append path "tightrope.c")
+          (string-append path "tightrope.h")
         (lambda ()
           (write-string src))
         (list 'replace))))
-
-  (define (generate-clang-tightrope-runtime path)
-    (generate-clang-tightrope-runtime-header path)
-    (generate-clang-tightrope-runtime-source path))
 
   (define (generate-clang-serial env struct dir)
     (let ((name (>clang-name (struct-name struct)))
