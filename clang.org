@@ -120,6 +120,12 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     (let ((src "#include <string.h>
   #include \"zeropack.h\"
 
+  typedef enum state {
+    NORMAL,
+    OO,
+    FF
+  } state_t;
+
   int zeropack(uint8_t * src, int len, uint8_t * dst) {
     uint8_t ffcnt = 0;
     int ffpos = 0;
@@ -131,6 +137,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     uint8_t bitmap = 0;
     int blen = len + ((len % 8) != 0 ? (8 - len % 8): 0);
     uint8_t buf[blen];
+    state_t state = NORMAL;
     memset(buf, 0, blen);
     memcpy(buf, src, len);
     for (int i = 0, l = blen / 8; i < l; i ++) {
@@ -142,55 +149,80 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
           bytes[bptr ++] = buf[i * 8 + j];
         }
       }
-      if (bitmap == 0x00) {
-        if (ffcnt > 0) {
+      switch(bitmap) {
+      case 0x00:
+        switch(state) {
+        case OO:
+          if (oocnt == 0xFF) {
+            dst[oopos] = 0xFF;
+            dst[ptr ++] = 0x00;
+            oopos = ptr ++;
+            oocnt = 1;
+          } else {
+            oocnt ++;
+          }
+          break;
+        case FF:
           dst[ffpos] = ffcnt;
           ffcnt = 0;
-        }
-        if (oocnt == 0) {
+          state = OO;
+          break;
+        default:
           dst[ptr ++] = 0x00;
           oopos = ptr ++;
           oocnt ++;
-        } else if (oocnt == 0xFF) {
-          dst[oopos] = 0xFF;
-          dst[ptr ++] = 0x00;
-          oopos = ptr ++;
-          oocnt = 1;
-        } else {
-          oocnt ++;
+          state = OO;
+          break;
         }
-      } else if (bitmap == 0xFF) {
-        if (oocnt > 0) {
+        break;
+      case 0xFF:
+        switch(state) {
+        case OO:
           dst[oopos] = oocnt;
           oocnt = 0;
-        }
-        if (ffcnt == 0) {
+          state = FF;
+          break;
+        case FF:
+          if (ffcnt == 0xFF) {
+            dst[ffpos] = 0xFF;
+            dst[ptr ++] = 0xFF;
+            ffpos = ptr ++;
+            ffcnt = 1;
+          } else {
+            ffcnt ++;
+          }
+          break;
+        default:
           dst[ptr ++] = 0xFF;
           ffpos = ptr ++;
           ffcnt ++;
-        } else if (ffcnt == 0xFF) {
-          dst[ffpos] = 0xFF;
-          dst[ptr ++] = 0xFF;
-          ffpos = ptr ++;
-          ffcnt = 1;
-        } else {
-          ffcnt ++;
+          state = FF;
+          break;
         }
         for (int k = 0; k < bptr; k ++) {
           dst[ptr ++] = bytes[k];
         }
-      } else {
+        break;
+      default:
+        switch(state) {
+        case OO:
+          dst[oopos] = oocnt;
+          oocnt = 0;
+          state = NORMAL;
+          break;
+        case FF:
+          dst[ffpos] = ffcnt;
+          ffcnt = 0;
+          state = NORMAL;
+          break;
+        default:
+          break;
+        }
         dst[ptr ++] = bitmap;
-        if (oocnt > 0) {
-          dst[oopos] = oocnt;
-          oocnt = 0;
-        } else if (ffcnt > 0) {
-          dst[ffpos] = ffcnt;
-          ffcnt = 0;
-        }
         for (int k = 0; k < bptr; k ++) {
           dst[ptr ++] = bytes[k];
         }
+        break;
       }
     }
     if (oocnt > 0) {
@@ -212,16 +244,8 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
       switch (src[sptr]) {
       case 0:
         cnt = src[sptr + 1];
-        for (int i = 0; i < cnt; i ++) {
-          dst[dptr ++] = 0;
-          dst[dptr ++] = 0;
-          dst[dptr ++] = 0;
-          dst[dptr ++] = 0;
-          dst[dptr ++] = 0;
-          dst[dptr ++] = 0;
-          dst[dptr ++] = 0;
-          dst[dptr ++] = 0;
-        }
+        memset(dst + dptr, 0, cnt * 8);
+        dptr += cnt * 8;
         sptr += 2;
         break;
       case 0xFF:
