@@ -54,9 +54,12 @@
                 field-decls
                 (indent-line 2 "};")
                 (indent-line 2 "int " name "_calculate_size(" sname " *);")
-                (indent-line 2 "void " name "_encode(" sname " *, uint8_t *);")
+                (indent-line 2 "int " name "_encode(" sname " *, uint8_t *);")
+                (indent-line 2 "int " name "_encode_zeropack(" sname " *, uint8_t *, int);")
                 (indent-line 2 "int " name "_estimate_size(uint8_t *);")
-                (indent-line 2 "void " name "_decode(uint8_t *, " sname " *);")
+                (indent-line 2 "int " name "_estimate_zeropack_size(uint8_t *, int);")
+                (indent-line 2 "int " name "_decode(uint8_t *, " sname " *);")
+                (indent-line 2 "int " name "_decode_zeropack(uint8_t *, int, " sname " *);")
                 setters
                 (indent-line 0 "#ifdef __cplusplus")
                 (indent-line 0 "}")
@@ -549,7 +552,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
 
   (define (generate-clang-set-data sname fields)
     (string-append
-     (indent-line 0 "static void " sname "_set__data(" (>clang-struct-name sname) " * " sname ", uint8_t * buf, short * dtags, int dlen) {")
+     (indent-line 0 "static int " sname "_set__data(" (>clang-struct-name sname) " * " sname ", uint8_t * buf, short * dtags, int dlen) {")
      (indent-line 2 "int ptr = 0;")
      (indent-line 2 "int size = 0;")
      (indent-line 2 "for (int i = 0; i < dlen; i ++) {")
@@ -559,17 +562,24 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
      (indent-line 6 "break;")
      (indent-line 4 "}")
      (indent-line 2 "}")
+     (indent-line 2 "return ptr;")
      (indent-line 0 "}")))
 
   (define (generate-clang-encoder sname fields)
     (string-append
      (generate-clang-set-fields sname fields)
      (generate-clang-set-data sname fields)
-     (indent-line 0 "void " sname "_encode(" (>clang-struct-name sname)" * " sname ", uint8_t * buf) {")
+     (indent-line 0 "int " sname "_encode(" (>clang-struct-name sname) " * " sname ", uint8_t * buf) {")
      (indent-line 2 "short dtags[" (number->string (length fields)) "];")
      (indent-line 2 "int dlen = 0;")
-     (indent-line 2 "int ptr = " sname "_set__fields(" sname ", buf, dtags, &dlen);")
-     (indent-line 2 sname "_set__data(" sname ", buf + ptr, dtags, dlen);")
+     (indent-line 2 "int ptr0 = " sname "_set__fields(" sname ", buf, dtags, &dlen);")
+     (indent-line 2 "int ptr1 = " sname "_set__data(" sname ", buf + ptr0, dtags, dlen);")
+     (indent-line 2 "return ptr0 + ptr1;")
+     (indent-line 0 "}")
+     (indent-line 0 "int " sname "_encode_zeropack(" (>clang-struct-name sname) " * " sname ", uint8_t * buf, int len) {")
+     (indent-line 2 "uint8_t obuf[len];")
+     (indent-line 2 "int size = " sname "_encode(" sname ", obuf);")
+     (indent-line 2 "return zeropack(obuf, size, buf);")
      (indent-line 0 "}")))
 #+end_src
 *** 预估解码大小
@@ -668,6 +678,12 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
      (indent-line 4 "}")
      (indent-line 2 "}")
      (indent-line 2 "return size;")
+     (indent-line 0 "}")
+     (indent-line 0 "int " sname "_estimate_zeropack_size(uint8_t * buf, int len) {")
+     (indent-line 2 "uint8_t factor = buf[0];")
+     (indent-line 2 "uint8_t uzpbuf[len * factor];")
+     (indent-line 2 "unzeropack(buf, len, uzpbuf);")
+     (indent-line 2 "return " sname "_estimate_size(uzpbuf);")
      (indent-line 0 "}")))
 #+end_src
 *** 解碼器
@@ -830,7 +846,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
 
   (define (generate-clang-parse-data sname fields)
     (string-append
-     (indent-line 0 "static void " sname "_parse_data(uint8_t * buf, " (>clang-struct-name sname) " * " sname ", short * dtags, const int dlen) {")
+     (indent-line 0 "static int " sname "_parse_data(uint8_t * buf, " (>clang-struct-name sname) " * " sname ", short * dtags, const int dlen) {")
      (indent-line 2 "int ptr = 0, sptr = sizeof(" (>clang-struct-name sname)");")
      (indent-line 2 "int size = 0;")
      (indent-line 2 "uint8_t * addr = (uint8_t *)" sname ";")
@@ -841,17 +857,25 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
      (indent-line 6 "break;")
      (indent-line 4 "}")
      (indent-line 2 "}")
+     (indent-line 2 "return ptr;")
      (indent-line 0 "}")))
 
   (define (generate-clang-decoder sname fields)
     (string-append
      (generate-clang-parse-fields sname fields)
      (generate-clang-parse-data sname fields)
-     (indent-line 0 "void " sname "_decode(uint8_t * buf, " (>clang-struct-name sname)" * " sname ") {")
+     (indent-line 0 "int " sname "_decode(uint8_t * buf, " (>clang-struct-name sname)" * " sname ") {")
      (indent-line 2 "short dtags[" (number->string (length fields)) "];")
      (indent-line 2 "int dlen = 0;")
-     (indent-line 2 "int ptr = " sname "_parse_fields(buf, " sname ", dtags, &dlen);")
-     (indent-line 2 sname "_parse_data(buf + ptr, " sname ", dtags, dlen);")
+     (indent-line 2 "int ptr0 = " sname "_parse_fields(buf, " sname ", dtags, &dlen);")
+     (indent-line 2 "int ptr1 = " sname "_parse_data(buf + ptr0, " sname ", dtags, dlen);")
+     (indent-line 2 "return ptr0 + ptr1;")
+     (indent-line 0 "}")
+     (indent-line 0 "int " sname "_decode_zeropack(uint8_t * buf, int len, " (>clang-struct-name sname)" * " sname ") {")
+     (indent-line 2 "uint8_t factor = buf[0];")
+     (indent-line 2 "uint8_t uzpbuf[len * factor];")
+     (indent-line 2 "unzeropack(buf, len, uzpbuf);")
+     (indent-line 2 "return " sname "_decode(uzpbuf, " sname ");")
      (indent-line 0 "}")))
 #+end_src
 *** 主體
@@ -903,7 +927,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
   (define (generate-clang-serial env struct dir)
     (let ((name (>clang-name (struct-name struct)))
           (fields (struct-fields struct)))
-      (let ((includes (string-append "#include <stdlib.h>\n#include <string.h>\n#include \"tightrope.h\"\n#include \"" name ".h\"\n"))
+      (let ((includes (string-append "#include <stdlib.h>\n#include <string.h>\n#include \"zeropack.h\"\n#include \"tightrope.h\"\n#include \"" name ".h\"\n"))
             (calcsize (generate-clang-calculate-size name fields))
             (encoder (generate-clang-encoder name fields))
             (estisize (generate-clang-estimate-size name fields))
