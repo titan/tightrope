@@ -442,7 +442,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
                    (indent-line (+ indent 2) "}")))
                  ((string)
                   (string-append
-                   (indent-line (+ indent 2) "size = 0;")
+                   (indent-line (+ indent 2) "size = 4;")
                    (indent-line (+ indent 2) "int tmp = ptr;")
                    (indent-line (+ indent 2) "ptr += 4;")
                    (indent-line (+ indent 2) "buf[ptr ++] = INT0(" len-accessor ");")
@@ -465,7 +465,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
                    (indent-line (+ indent 2) "buf[tmp + 3] = INT3(size);")))
                  (else
                   (string-append
-                   (indent-line (+ indent 2) "size = 0;")
+                   (indent-line (+ indent 2) "size = 4;")
                    (indent-line (+ indent 2) "int tmp = ptr;")
                    (indent-line (+ indent 2) "ptr += 4;")
                    (indent-line (+ indent 2) "buf[ptr ++] = INT0(" len-accessor ");")
@@ -585,32 +585,36 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
                ((byte short int long)
                 (string-append
                  (indent-line (+ indent 2) "int s = INT(buf + ptr);")
-                 (indent-line (+ indent 2) "size += s;")
-                 (indent-line (+ indent 2) "ptr += 4 + s;")))
+                 (indent-line (+ indent 2) "ptr += s + 4;")
+                 (indent-line (+ indent 2) "size += s;")))
                ((string)
                 (string-append
                  (indent-line (+ indent 2) "int s = INT(buf + ptr);")
-                 (indent-line (+ indent 2) "int count = INT(buf + ptr + 4);")
-                 (indent-line (+ indent 2) "int tmp = ptr + 8; ")
+                 (indent-line (+ indent 2) "ptr += 4;")
+                 (indent-line (+ indent 2) "int count = INT(buf + ptr);")
+                 (indent-line (+ indent 2) "ptr += 4;")
+                 (indent-line (+ indent 2) "int tmp = ptr; ")
+                 (indent-line (+ indent 2) "ptr += s - 4;")
                  (indent-line (+ indent 2) "size += count * sizeof(char *); ")
                  (indent-line (+ indent 2) "for (int j = 0; j < count; j ++) {")
                  (indent-line (+ indent 4) "int l = INT(buf + tmp);")
                  (indent-line (+ indent 4) "size += l + 1;")
                  (indent-line (+ indent 4) "tmp += l + 4;")
-                 (indent-line (+ indent 2) "}")
-                 (indent-line (+ indent 2) "ptr += 4 + s;")))
+                 (indent-line (+ indent 2) "}")))
                (else
                 (string-append
                  (indent-line (+ indent 2) "int s = INT(buf + ptr);")
-                 (indent-line (+ indent 2) "int count = INT(buf + ptr + 4);")
-                 (indent-line (+ indent 2) "int tmp = ptr + 8; ")
+                 (indent-line (+ indent 2) "ptr += 4;")
+                 (indent-line (+ indent 2) "int count = INT(buf + ptr);")
+                 (indent-line (+ indent 2) "ptr += 4;")
+                 (indent-line (+ indent 2) "int tmp = ptr; ")
+                 (indent-line (+ indent 2) "ptr += s - 4;")
                  (indent-line (+ indent 2) "size += count * sizeof(" (>clang-struct-name (symbol->string base-type)) " *); ")
                  (indent-line (+ indent 2) "for (int j = 0; j < count; j ++) {")
                  (indent-line (+ indent 4) "int l = INT(buf + tmp); ")
                  (indent-line (+ indent 4) "size += " (>clang-name (symbol->string base-type)) "_estimate_size(buf + tmp + 4);")
                  (indent-line (+ indent 4) "tmp += l + 4;")
-                 (indent-line (+ indent 2) "}")
-                 (indent-line (+ indent 2) "ptr += 4 + s;")))))
+                 (indent-line (+ indent 2) "}")))))
            (case type
              ((byte)
               (indent-line (+ indent 2) "ptr += 4 + 1;"))
@@ -628,8 +632,9 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
              (else
               (string-append
                (indent-line (+ indent 2) "int s = INT(buf + ptr);")
-               (indent-line (+ indent 2) "size += " (>clang-name (symbol->string type)) "_estimate_size(buf + ptr + 4);")
-               (indent-line (+ indent 2) "ptr += 4 + s;")))))
+               (indent-line (+ indent 2) "ptr += 4;")
+               (indent-line (+ indent 2) "size += " (>clang-name (symbol->string type)) "_estimate_size(buf + ptr);")
+               (indent-line (+ indent 2) "ptr += s;")))))
        (indent-line (+ indent 2) "break;")
        (indent-line indent "}"))))
 
