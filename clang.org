@@ -32,6 +32,17 @@
              (indent-line indent "}")))
           "")))
 
+  (define (generate-clang-field-length-getter-declare struct-name field indent)
+    (let ((name (>clang-name (field-name field)))
+          (type (field-type field)))
+      (if (array-type? type)
+          (let ((base-type (array-base-type type)))
+            (string-append
+             (indent-line indent "static inline int " struct-name "_get_" name "_len(" (>clang-struct-name struct-name) " * " struct-name ") {")
+             (indent-line (+ indent 2) "return " struct-name "->__" name "_len;")
+             (indent-line indent "}")))
+          "")))
+
   (define (generate-clang-entity struct dir)
     (let ((name (>clang-name (struct-name struct)))
           (fields (struct-fields struct)))
@@ -39,7 +50,8 @@
             (includes (strcat (map generate-clang-include fields)))
             (sname (>clang-struct-name name))
             (field-decls (strcat (map (lambda (x) (indent-line 4 (generate-clang-field-declare x))) fields)))
-            (setters (strcat (map (lambda (x) (generate-clang-field-setter-declare name x 2)) (filter (lambda (y) (array-type? (field-type y))) fields)))))
+            (setters (strcat (map (lambda (x) (generate-clang-field-setter-declare name x 2)) (reverse (filter (lambda (y) (array-type? (field-type y))) fields)))))
+            (len-getters (strcat (map (lambda (x) (generate-clang-field-length-getter-declare name x 2)) (reverse (filter (lambda (y) (array-type? (field-type y))) fields))))))
         (let ((content
                (string-append
                 (indent-line 0 "#ifndef " macro-name)
@@ -61,6 +73,7 @@
                 (indent-line 2 "int " name "_decode(uint8_t *, " sname " *);")
                 (indent-line 2 "int " name "_decode_zeropack(uint8_t *, int, " sname " *);")
                 setters
+                len-getters
                 (indent-line 0 "#ifdef __cplusplus")
                 (indent-line 0 "}")
                 (indent-line 0 "#endif")
