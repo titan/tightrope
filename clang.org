@@ -89,7 +89,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
   extern \"C\" {
   #endif
     int zeropack(uint8_t * src, int len, uint8_t * dst);
-    int zerounpack(uint8_t * src, int len, uint8_t * dst);
+    int unzeropack(uint8_t * src, int len, uint8_t * dst);
   #ifdef __cplusplus
   }
   #endif
@@ -110,7 +110,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     uint8_t oocnt = 0;
     int oopos = 0;
     int ptr = 1;
-    uint8_t bytes[0];
+    uint8_t bytes[8];
     int bptr = 0;
     uint8_t bitmap = 0;
     int blen = len + ((len % 8) != 0 ? (8 - len % 8): 0);
@@ -188,7 +188,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     return ptr;
   }
 
-  int zerounpack(uint8_t * src, int len, uint8_t * dst) {
+  int unzeropack(uint8_t * src, int len, uint8_t * dst) {
     int sptr = 1;
     int dptr = 0;
     int cnt = 0;
