@@ -8,9 +8,10 @@
   <<utility>>
 
   (define (generate-clang-include field)
-    (if (custom-type? (field-type field))
-        (string-append "#include \"" (>clang-name (symbol->string (field-type field))) ".h\"\n")
-        ""))
+    (let ((type (if (array-type? (field-type field)) (array-base-type (field-type field)) (field-type field))))
+      (if (custom-type? type)
+          (string-append "#include \"" (>clang-name (symbol->string type)) ".h\"\n")
+          "")))
 
   (define (generate-clang-field-declare field)
     (let ((name (>clang-name (field-name field)))
