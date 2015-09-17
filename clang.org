@@ -774,7 +774,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
                  (indent-line (+ indent 2) "int size = INT(buf + ptr);")
                  (indent-line (+ indent 2) "ptr += 4;")
                  (indent-line (+ indent 2) len-accessor " = size;")
-                 (indent-line (+ indent 2) accessor " = (char *)(addr + sptr);")
+                 (indent-line (+ indent 2) accessor " = (uint8_t *)(addr + sptr);")
                  (indent-line (+ indent 2) "memcpy(" accessor ", buf + ptr, size);")
                  (indent-line (+ indent 2) "ptr += size;")
                  (indent-line (+ indent 2) "sptr += size;")))
@@ -1010,7 +1010,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
 
   (define (>clang-type type)
     (case type
-      ((byte) "char")
+      ((byte) "uint8_t")
       ((short) "int16_t")
       ((int) "int32_t")
       ((long) "int64_t")
