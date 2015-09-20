@@ -387,6 +387,8 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
               (indent-line (+ indent 4) "} else {")
               (indent-line (+ indent 6) "buf[ptr ++] = 0;")
               (indent-line (+ indent 6) "buf[ptr ++] = 0;")
+              (indent-line (+ indent 6) "dtags[* dlen] = " tag ";")
+              (indent-line (+ indent 6) "(* dlen) ++;")
               (indent-line (+ indent 4) "}")
               (indent-line (+ indent 4) "tag = nexttag + 1;")
               (indent-line (+ indent 2) "}"))
