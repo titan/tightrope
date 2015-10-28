@@ -342,6 +342,10 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
              (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = " (>erlang-module-name (symbol->string type)) ":decode(Data)});"))
             ((eq? type 'string)
              (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = unicode:characters_to_list(Data)});"))
+            ((eq? type 'byte)
+             (string-append
+              (indent-line (+ base-indent 4) "<<Num:?BYTE_SIZE/integer-signed>> = Data,")
+              (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = Num});")))
             ((eq? type 'short)
              (string-append
               (indent-line (+ base-indent 4) "<<Num:?SHORT_SIZE/integer-signed>> = Data,")
@@ -360,8 +364,7 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
   (define (generate-erlang-parse-data struct)
     (let* ((name (>erlang-name (struct-name struct)))
            (fields (struct-fields struct))
-           (vname (>erlang-var-name name))
-           (action (strcat (map (lambda (x) (generate-erlang-parse-data-action name x 16)) (filter (lambda (x) (not (eq? (field-type x) 'byte))) fields)))))
+           (vname (>erlang-var-name name)))
       (let ((spec (string-append "-spec parse_data(binary(), [non_neg_integer()], #" (>erlang-module-name name) "{}) -> #" (>erlang-module-name name) "{}.\n"))
             (sign (string-append "parse_data(Buffer, DTags, " vname ") ->\n"))
             (body (string-append
@@ -371,7 +374,10 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
                    (indent-line 8 "true ->")
                    (indent-line 12 "Tag = hd(DTags),")
                    (indent-line 12 "case Tag of")
-                   (string-append (substring action 0 (- (string-length action) 2)) "\n")
+                   (strcat (map (lambda (x) (generate-erlang-parse-data-action name x 16)) fields))
+                   (indent-line 16 "_ ->")
+                   (indent-line 20 "<<Length:32, Data:Length/binary, Rest/binary>> = Buffer, % Data is unused")
+                   (indent-line 20 "parse_data(Rest, tl(DTags), " (>erlang-var-name name) ")")
                    (indent-line 12 "end")
                    (indent-line 4 "end."))))
         (string-append spec sign body))))
