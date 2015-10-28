@@ -8,9 +8,13 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
   <<utility>>
 
   (define (generate-erlang-include field)
-    (if (custom-type? (field-type field))
-        (string-append "-include(\"" (>erlang-name (symbol->string (field-type field))) ".hrl\").\n")
-        ""))
+    (let ((type (let ((t (field-type field)))
+                  (if (array-type? t)
+                      (array-base-type t)
+                      t))))
+      (if (custom-type? type)
+          (string-append "-include(\"" (>erlang-name (symbol->string type)) ".hrl\").\n")
+          "")))
 
   (define (generate-erlang-field-declare field)
     (let ((name (>erlang-name (field-name field)))
@@ -376,7 +380,7 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
                    (indent-line 12 "case Tag of")
                    (strcat (map (lambda (x) (generate-erlang-parse-data-action name x 16)) fields))
                    (indent-line 16 "_ ->")
-                   (indent-line 20 "<<Length:32, Data:Length/binary, Rest/binary>> = Buffer, % Data is unused")
+                   (indent-line 20 "<<Length:32, _:Length/binary, Rest/binary>> = Buffer,")
                    (indent-line 20 "parse_data(Rest, tl(DTags), " (>erlang-var-name name) ")")
                    (indent-line 12 "end")
                    (indent-line 4 "end."))))
