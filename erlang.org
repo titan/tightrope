@@ -23,7 +23,8 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
           (let ((base-type (array-base-type type)))
             (cond
              ((custom-type? base-type) (string-append name "::[#" (>erlang-module-name (symbol->string base-type)) "{}],"))
-             (else (string-append name "::[" (>erlang-type type) "],"))))
+             ((eq? base-type 'byte) (string-append name "::binary(),"))
+             (else (string-append name "::[" (>erlang-type base-type) "],"))))
           (cond
            ((custom-type? type) (string-append name "::#" (>erlang-module-name (symbol->string type)) "{},"))
            (else (string-append name "::" (>erlang-type type) ","))))))
@@ -164,7 +165,7 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
              (let* ((base-type (array-base-type type))
                     (binary (cond
                              ((eq? base-type 'byte)
-                              (string-append "ObjBin = tightrope:number_array_to_binary(" accessor ", ?BYTE_SIZE),"))
+                              (string-append "ObjBin = " accessor ","))
                              ((eq? base-type 'short)
                               (string-append "ObjBin = tightrope:number_array_to_binary(" accessor ", ?SHORT_SIZE),"))
                              ((eq? base-type 'int)
