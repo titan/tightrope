@@ -335,7 +335,7 @@ Erlang 是函數式語言，沒有對象的概念。在 Tightrope erlang 實現�
               ((eq? base-type 'string)
                (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = tightrope:binary_to_string_array(Data)});"))
               ((eq? base-type 'byte)
-               (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = tightrope:binary_to_number_array(Data, ?BYTE_SIZE)});"))
+               (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = Data});"))
               ((eq? base-type 'short)
                (indent-line (+ base-indent 4) "parse_data(Rest, tl(DTags), " (>erlang-var-name sname) "#" (>erlang-module-name sname) "{" name " = tightrope:binary_to_number_array(Data, ?SHORT_SIZE)});"))
               ((eq? base-type 'int)
