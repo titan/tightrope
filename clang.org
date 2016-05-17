@@ -663,11 +663,11 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
                  (indent-line (+ indent 2) "ptr += 4;")
                  (indent-line (+ indent 2) "int count = INT(buf + ptr);")
                  (indent-line (+ indent 2) "ptr += 4;")
-                 (indent-line (+ indent 2) "int tmp = ptr; ")
+                 (indent-line (+ indent 2) "int tmp = ptr;")
                  (indent-line (+ indent 2) "ptr += s - 4;")
-                 (indent-line (+ indent 2) "size += count * sizeof(" (>clang-struct-name (symbol->string base-type)) " *); ")
+                 (indent-line (+ indent 2) "size += count * sizeof(" (>clang-struct-name (symbol->string base-type)) " *);")
                  (indent-line (+ indent 2) "for (int j = 0; j < count; j ++) {")
-                 (indent-line (+ indent 4) "int l = INT(buf + tmp); ")
+                 (indent-line (+ indent 4) "int l = INT(buf + tmp);")
                  (indent-line (+ indent 4) "size += " (>clang-name (symbol->string base-type)) "_estimate_size(buf + tmp + 4);")
                  (indent-line (+ indent 4) "tmp += l + 4;")
                  (indent-line (+ indent 2) "}")))))
@@ -967,6 +967,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
   #define LONG5(x) (uint8_t)(((x) >> 16) & 0xFF)
   #define LONG6(x) (uint8_t)(((x) >> 8) & 0xFF)
   #define LONG7(x) (uint8_t)((x) & 0xFF)
+
 
   static inline int tightrope_padding(short tag, short nexttag, uint8_t * buf, short * count) {
     if (tag == nexttag) {
