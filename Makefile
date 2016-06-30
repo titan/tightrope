@@ -1,6 +1,8 @@
 NAME:=tightrope
 BUILDDIR:=/dev/shm/$(NAME)-build
 TARGET:=$(BUILDDIR)/$(NAME)
+TARGETSRC:=$(TARGET).ss
+TARGETOBJ:=$(TARGET).so
 DOCUMENT:=$(BUILDDIR)/$(NAME).pdf
 DOCSRC:=$(BUILDDIR)/$(NAME).org
 PNGS+=$(patsubst ./%,$(BUILDDIR)/%,$(patsubst %.aa,%.png,$(shell find . -name "*.aa")))
@@ -13,7 +15,7 @@ SED:=sed
 
 SRCS:=$(wildcard *.scm)
 
-all: $(TARGET)
+all: $(TARGET) $(TARGETOBJ)
 
 doc: $(DOCUMENT)
 
@@ -28,11 +30,20 @@ $(DOCUMENT): $(DOCSRC) $(HOME)/templates/pandoc-template.tex $(HOME)/templates/s
 $(DOCSRC): prebuild | core.org java.org erlang.org clang.org
 	$(CAT) core.org java.org erlang.org clang.org > $(DOCSRC)
 
-$(TARGET): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/main.scm
-	$(ECHO) "#! /usr/bin/petite --script" > $(TARGET)
-	$(CAT) $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/main.scm >> $(TARGET)
-	$(ECHO) "(main (command-line))" >> $(TARGET)
-	$(SED) -i -r '/\(load \".*\"\)/d' $(TARGET)
+$(TARGETSRC): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/main.scm
+	$(ECHO) "(import (chezscheme))" > $(TARGETSRC)
+	$(CAT) $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/main.scm >> $(TARGETSRC)
+	$(ECHO) "(main (command-line))" >> $(TARGETSRC)
+	$(SED) -i -r '/\(load \".*\"\)/d' $(TARGETSRC)
+
+$(TARGETOBJ): $(TARGETSRC)
+	$(ECHO) '(compile-program "$(TARGETSRC)")' | chez-scheme -q --optimize-level 3
+
+$(TARGET):
+	$(ECHO) '#! /bin/sh' > $(TARGET)
+	$(ECHO) 'LINK=`readlink -f $$0`' >> $(TARGET)
+	$(ECHO) 'BASE=`dirname $$LINK`' >> $(TARGET)
+	$(ECHO) 'chez-scheme --program $$BASE/$(NAME).so $$@' >> $(TARGET)
 	$(CHMOD) 755 $(TARGET)
 
 $(BUILDDIR)/%.png: %.aa | prebuild

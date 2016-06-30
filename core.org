@@ -139,7 +139,7 @@ capnproto 類似的壓縮零方法：
 ** 命令行接口
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/main.scm
   (define (usage prog)
-    (let ((prompt (string-append "Usage: " prog " [option] <source files>\nOptions:\n"))
+    (let ((prompt (string-append "Usage: chez-scheme --program " prog " [option] <source files>\nOptions:\n"))
           (options '(" -entity        Generate entity code\n"
                      " -serial        Generate serialize/deserialize code\n"
                      " -erlang        Generate codes for Erlang\n"
@@ -156,7 +156,7 @@ capnproto 類似的壓縮零方法：
     (let loop ((datum (read in))
                (ast '()))
       (if (eof-object? datum)
-          (eval (reverse ast) '())
+          (eval-ast (reverse ast) '())
           (loop (read in) (cons datum ast)))))
 
   (define (read-file filename)
@@ -303,7 +303,7 @@ capnproto 類似的壓縮零方法：
      ((eq? (car e) 'struct) (eval-struct (symbol->string (cadr e)) (cddr e)))
      (else (error "eval-exp" "unknown express" e))))
 
-  (define (eval ast env)
+  (define (eval-ast ast env)
     (let loop ((as ast)
                (env env))
       (if (null? as)
@@ -415,13 +415,6 @@ capnproto 類似的壓縮零方法：
       (if (null? is)
           r
           (loop (cdr is) (acc-fun r (car is))))))
-
-  (define (filter cond-fun items)
-    (let loop ((is items)
-               (r '()))
-      (if (null? is)
-          r
-          (loop (cdr is) (if (cond-fun (car is)) (cons (car is) r) r)))))
 
   (define (qsort lst comparator)
     (if (null? lst)
