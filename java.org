@@ -528,7 +528,7 @@ Tightrope 會在 package 下生成壓縮和解壓 Java 代碼。每個生成的 
       }
       public static byte [] zeros = {0, 0, 0, 0, 0, 0, 0, 0};
       public static byte [] unpack(byte [] inp) {
-          ByteBuffer buf = ByteBuffer.allocate(inp.length * inp[0]);
+          ByteBuffer buf = ByteBuffer.allocate(inp.length * inp[0] < 8? 8 : inp.length * inp[0]);
           int ptr = 1;
           int cnt = 0;
           while (ptr < inp.length) {
