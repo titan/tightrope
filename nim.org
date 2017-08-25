@@ -1,0 +1,813 @@
+
+* nim 後端實現
+
+** 實體對象
+在 Tightrope nim 實現中，用結構體來實現數據結構，實體對象的名稱遵循 nim 語言的命名規 則。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/nim.scm
+  <<utility>>
+
+  (define (generate-nim-import type)
+    (string-append "import " (>nim-token (symbol->string type)) "\n"))
+
+  (define (generate-nim-field-declare field)
+    (let ((name (>nim-token (field-name field)))
+          (type (field-type field)))
+      (if (array-type? type)
+          (let ((base-type (array-base-type type)))
+            (string-append name "*: seq["
+                           (if (custom-type? base-type)
+                               (let ((typestr (symbol->string base-type)))
+                                 (strcat (list "ref " (>nim-token typestr) "." (>nim-object-type typestr))))
+                               (>nim-type base-type)) "]"))
+          (string-append name "*: "
+                         (if (custom-type? type)
+                             (let ((typestr (symbol->string type)))
+                               (strcat (list "ref " (>nim-token typestr) "." (>nim-object-type typestr))))
+                             (>nim-type type))))))
+
+  (define (generate-nim-entity struct dir)
+    (let ((sname (>nim-token (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((tname (>nim-object-type sname))
+            (field-decls (strcat (map (lambda (x) (indent-line 4 (generate-nim-field-declare x))) fields)))
+            (imports
+             (strcat (unique (reduce (lambda (acc field)
+                                       (let ((type
+                                              (if (array-type? (field-type field))
+                                                  (array-base-type (field-type field))
+                                                  (field-type field))))
+                                         (if (custom-type? type)
+                                             (cons (generate-nim-import type) acc)
+                                             acc)))
+                                     '() fields)))))
+        (let ((content
+               (string-append
+                "import tightrope\n"
+                "import zeropack\n"
+                imports
+                (indent-line 0 "type")
+                (indent-line 2 tname "* = object of RootObj")
+                field-decls)))
+          (with-output-to-file
+              (string-append dir sname ".nim")
+            (lambda ()
+              (write-string content))
+            (list 'replace))))))
+
+  (define (generate-nim-entities env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (for-each
+       (lambda (entity) (generate-nim-entity entity path))
+       (get-structs env))))
+#+end_src
+
+** 序列化與反序列化
+*** 計算編碼大小
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/nim.scm
+  (define (generate-nim-calculate-size-recursive sname field indent)
+    (let ((type (field-type field))
+          (name (>nim-token (field-name field)))
+          (tag (number->string (field-tag field))))
+      (let ((accessor (>nim-accessor sname name)))
+        (if (array-type? type)
+            (let ((base-type (array-base-type type)))
+              (cond
+               ((primitive-type? base-type)
+                (string-append
+                 (indent-line indent "if " accessor " != nil:")
+                 (indent-line (+ indent 2) "tags[len] = " tag)
+                 (indent-line (+ indent 2) "len += 1")
+                 (indent-line (+ indent 2) "size += 2 + 4 + len(" accessor ") * sizeof(" (>nim-type base-type) ")")))
+               ((eq? base-type 'string)
+                (string-append
+                 (indent-line indent "if " accessor " != nil:")
+                 (indent-line (+ indent 2) "tags[len] = " tag)
+                 (indent-line (+ indent 2) "len += 1")
+                 (indent-line (+ indent 2) "size += 2 + 4 + 4")
+                 (indent-line (+ indent 2) "for i in 0..(len(" accessor ") - 1):")
+                 (indent-line (+ indent 4) "size += 4 + len(" accessor "[i])")))
+               (else
+                (string-append
+                 (indent-line indent "if " accessor " != nil:")
+                 (indent-line (+ indent 2) "tags[len] = " tag)
+                 (indent-line (+ indent 2) "len += 1")
+                 (indent-line (+ indent 2) "size += 2 + 4 + 4")
+                 (indent-line (+ indent 2) "for i in 0..(len(" accessor ") - 1):")
+                 (indent-line (+ indent 4) "size += 4 + " (>nim-token (symbol->string base-type)) ".calculate_size(" accessor "[i])")))))
+            (cond
+             ((primitive-type? type)
+              (string-append
+               (indent-line indent "if " accessor " != 0:")
+               (string-append
+                (indent-line (+ indent 2) "tags[len] = " tag)
+                (indent-line (+ indent 2) "len += 1")
+                (indent-line (+ indent 2) "if " accessor " > 0" (if (eq? type 'byte) ":" (string-append " and " accessor " < 16383:")))
+                (indent-line (+ indent 4) "size += 2")
+                (indent-line (+ indent 2) "else:")
+                (indent-line (+ indent 4) "size += 2 + 4 + sizeof(" (>nim-type type) ")"))))
+             ((eq? type 'string)
+              (string-append
+               (indent-line indent "if " accessor " != nil:")
+               (indent-line (+ indent 2) "tags[len] = " tag)
+               (indent-line (+ indent 2) "len += 1")
+               (indent-line (+ indent 2) "size += 2 + 4 + len(" accessor ")")))
+             (else
+              (string-append
+               (indent-line indent "if " accessor " != nil:")
+               (indent-line (+ indent 2) "tags[len] = " tag)
+               (indent-line (+ indent 2) "len += 1")
+               (indent-line (+ indent 2) "size += 2 + 4 + " (>nim-token (symbol->string type)) ".calculate_size(" accessor ")"))))))))
+
+  (define (generate-nim-calculate-size sname fields)
+    (let ((vsname (>nim-token sname))
+          (tname (>nim-object-type sname)))
+      (string-append
+       (indent-line 0 "proc calculate_size*(" vsname ": ref " tname "): int =")
+       (indent-line 2 "var")
+       (indent-line 4 "size: int = 2")
+       (indent-line 4 "tags: array[0.." (number->string (- (length fields) 1)) ", int]")
+       (indent-line 4 "len: int = 0")
+       (strcat (map (lambda (x) (generate-nim-calculate-size-recursive sname x 2)) fields))
+       (indent-line 2 "if len > 0:")
+       (indent-line 4 "if tags[0] != 0:")
+       (indent-line 6 "size += 2")
+       (indent-line 4 "for i in 1..(len - 1):")
+       (indent-line 6 "if tags[i - 1] + 1 != tags[i]:")
+       (indent-line 8 "size += 2")
+       (indent-line 2 "return size"))))
+#+end_src
+*** 編碼器
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/nim.scm
+  (define (generate-nim-set-field-action sname field indent)
+    (let ((type (field-type field))
+          (tag (number->string (field-tag field)))
+          (name (>nim-token (field-name field))))
+      (let ((accessor (>nim-accessor sname name)))
+        (string-append
+         (indent-line indent "of " tag ":")
+         (if (primitive-type? type)
+             (string-append
+              (indent-line (+ indent 2) "if " accessor " != 0:")
+              (indent-line (+ indent 4) "count += 1")
+              (indent-line (+ indent 4) "bptr += tightrope.padding(tag, nexttag, buf, bptr, count)")
+              (indent-line (+ indent 4) "tag = nexttag + 1")
+              (indent-line (+ indent 4) "if " accessor " > 0" (if (eq? type 'byte) ":" (string-append " and " accessor " < 16383:")))
+              (case type
+                ((int long)
+                 (indent-line (+ indent 6) "let t: int16 = cast[int16]((" accessor " + 1) * 2)"))
+                (else
+                 (indent-line (+ indent 6) "let t: int16 = (" accessor " + 1) * 2")))
+              (indent-line (+ indent 6) "assign_short(buf, bptr, t)")
+              (indent-line (+ indent 4) "else:")
+              (indent-line (+ indent 6) "assign_short_0(buf, bptr)")
+              (indent-line (+ indent 6) "dtags[dlen] = 1")
+              (indent-line (+ indent 6) "dlen += 1"))
+             (string-append
+              (indent-line (+ indent 2) "if " accessor " != nil:")
+              (indent-line (+ indent 4) "dtags[dlen] = " tag)
+              (indent-line (+ indent 4) "dlen += 1")
+              (indent-line (+ indent 4) "count += 1")
+              (indent-line (+ indent 4) "bptr += tightrope.padding(tag, nexttag, buf, bptr, count)")
+              (indent-line (+ indent 4) "tag = nexttag + 1")
+              (indent-line (+ indent 4) "assign_short_0(buf, bptr)")))))))
+
+  (define (generate-nim-set-fields sname fields)
+    (let ((vsname (>nim-token sname))
+          (tname (>nim-object-type sname))
+          (max-tag+1 (number->string (+ (apply max (map (lambda(x) (field-tag x)) fields)) 1))))
+      (string-append
+       (indent-line 0 "proc set_fields(" vsname ": ref " tname ", buf: var seq[byte], start: int, dtags: var openArray[int], dlen: var int): int =")
+       (indent-line 2 "var")
+       (indent-line 4 "bptr: int = start + 2")
+       (indent-line 4 "count: int16 = 0")
+       (indent-line 4 "tag: int16 = 0")
+       (indent-line 4 "nexttag: int16 = 0")
+       (indent-line 2 "while nexttag < " max-tag+1 ":")
+       (indent-line 4 "case nexttag:")
+       (strcat (map (lambda (x) (generate-nim-set-field-action sname x 6)) fields))
+       (indent-line 6 "else:")
+       (indent-line 8 "discard")
+       (indent-line 4 "nexttag += 1")
+       (indent-line 2 "buf[start] = SHORT0(count)")
+       (indent-line 2 "buf[start + 1] = SHORT1(count)")
+       (indent-line 2 "return bptr"))))
+
+  (define (generate-nim-set-data-action sname field indent)
+    (let ((tag (number->string (field-tag field)))
+          (type (field-type field))
+          (name (>nim-token (field-name field))))
+      (let ((accessor (>nim-accessor sname name)))
+        (string-append
+         (indent-line indent "of " tag ":")
+         (if (array-type? type)
+             (let ((base-type (array-base-type type)))
+               (case base-type
+                 ((byte)
+                  (string-append
+                   (indent-line (+ indent 2) "var absize: int = len(" accessor ")")
+                   (indent-line (+ indent 2) "assign_int(buf, bptr, cast[int32](absize))")
+                   (indent-line (+ indent 2) "for j in 0..(absize - 1):")
+                   (indent-line (+ indent 4) "buf[bptr] = cast[byte](" accessor "[j])")
+                   (indent-line (+ indent 4) "bptr += 1")))
+                 ((short)
+                  (string-append
+                   (indent-line (+ indent 2) "var assize: int = len(" accessor ") * sizeof(int16)")
+                   (indent-line (+ indent 2) "assign_int(buf, bptr, cast[int32](assize))")
+                   (indent-line (+ indent 2) "for j in 0..(len(" accessor ") - 1):")
+                   (indent-line (+ indent 4) "assign_short(buf, bptr, " accessor "[j])")))
+                 ((int)
+                  (string-append
+                   (indent-line (+ indent 2) "var aisize: int = len(" accessor ") * sizeof(int32)")
+                   (indent-line (+ indent 2) "assign_int(buf, bptr, cast[int32](aisize))")
+                   (indent-line (+ indent 2) "for j in 0..(len(" accessor ") - 1):")
+                   (indent-line (+ indent 4) "assign_int(buf, bptr, " accessor "[j])")))
+                 ((long)
+                  (string-append
+                   (indent-line (+ indent 2) "var alsize: int = len(" accessor ") * sizeof(int64)")
+                   (indent-line (+ indent 2) "assign_int(buf, bptr, cast[int32](alsize))")
+                   (indent-line (+ indent 2) "for j in 0..(len(" accessor ") - 1):")
+                   (indent-line (+ indent 4) "assign_long(buf, bptr, " accessor "[j])")))
+                 ((string)
+                  (string-append
+                   (indent-line (+ indent 2) "var")
+                   (indent-line (+ indent 4) "astrsize: int = 4")
+                   (indent-line (+ indent 4) "tmp: int = bptr")
+                   (indent-line (+ indent 2) "bptr += 4")
+                   (indent-line (+ indent 2) "assign_int(buf, bptr, cast[int32](len(" accessor ")))")
+                   (indent-line (+ indent 2) "for j in 0..(len(" accessor ") - 1):")
+                   (indent-line (+ indent 4) "var")
+                   (indent-line (+ indent 6) "slen: int = len(" accessor "[j])")
+                   (indent-line (+ indent 6) name ": cstring = " accessor "[j]")
+                   (indent-line (+ indent 4) "astrsize += slen + 4")
+                   (indent-line (+ indent 4) "assign_int(buf, bptr, cast[int32](slen))")
+                   (indent-line (+ indent 4) "copyMem(addr(buf[bptr]), " name ", cast[int32](slen))")
+                   (indent-line (+ indent 4) "bptr += slen")
+                   (indent-line (+ indent 2) "assign_int(buf, tmp, cast[int32](astrsize))")))
+                 (else
+                  (string-append
+                   (indent-line (+ indent 2) "var")
+                   (indent-line (+ indent 4) "aobjsize: int = 4")
+                   (indent-line (+ indent 4) "tmp: int = bptr")
+                   (indent-line (+ indent 2) "bptr += 4")
+                   (indent-line (+ indent 2) "assign_int(buf, bptr, cast[int32](len(" accessor ")))")
+                   (indent-line (+ indent 2) "for j in 0..(len(" accessor ") - 1):")
+                   (indent-line (+ indent 4) "var objsize: int = " (>nim-token (symbol->string base-type)) ".calculate_size(" accessor "[j])")
+                   (indent-line (+ indent 4) "aobjsize += objsize + 4;")
+                   (indent-line (+ indent 4) "assign_int(buf, bptr, cast[int32](objsize))")
+                   (indent-line (+ indent 4) "discard " (>nim-token (symbol->string base-type)) ".encode_into(" accessor "[j], buf, bptr)")
+                   (indent-line (+ indent 4) "bptr += objsize")
+                   (indent-line (+ indent 2) "assign_int(buf, tmp, cast[int32](aobjsize))")))))
+             (case type
+               ((byte)
+                (string-append
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 1")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = cast[byte](" accessor ")")
+                 (indent-line (+ indent 2) "bptr += 1")))
+               ((short)
+                (string-append
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 2")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "assign_short(buf, bptr, " accessor ")")))
+               ((int)
+                (string-append
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 4")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "assign_int(buf, bptr, " accessor ")")))
+               ((long)
+                (string-append
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 0")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "buf[bptr] = 8")
+                 (indent-line (+ indent 2) "bptr += 1")
+                 (indent-line (+ indent 2) "assign_long(buf, bptr, " accessor ")")))
+               ((string)
+                (string-append
+                 (indent-line (+ indent 2) "var")
+                 (indent-line (+ indent 4) "slen: int = len(" accessor ")")
+                 (indent-line (+ indent 4) "slen32: int32 = cast[int32](slen)")
+                 (indent-line (+ indent 4) name ": cstring = " accessor)
+                 (indent-line (+ indent 2) "assign_int(buf, bptr, slen32)")
+                 (indent-line (+ indent 2) "copyMem(addr(buf[bptr]), " name ", slen32)")
+                 (indent-line (+ indent 2) "bptr += slen")))
+               (else
+                (let ((objname (>nim-token (symbol->string type))))
+                  (string-append
+                   (indent-line (+ indent 4) "var objsize: int = " objname ".calculate_size(" accessor ")")
+                   (indent-line (+ indent 4) "assign_int(buf, bptr, cast[int32](objsize))")
+                   (indent-line (+ indent 4) "discard " objname ".encode_into(" accessor ", buf, bptr)")
+                   (indent-line (+ indent 4) "bptr += objsize"))))))))))
+
+  (define (generate-nim-set-data sname fields)
+    (let ((vsname (>nim-token sname))
+          (tname (>nim-object-type sname)))
+      (string-append
+       (indent-line 0 "proc set_data(" vsname ": ref " tname ", buf: var seq[byte], start: int, dtags: openArray[int], dlen: int): int =")
+       (indent-line 2 "var bptr: int = start")
+       (indent-line 2 "for i in 0..(dlen - 1):")
+       (indent-line 4 "case dtags[i]:")
+       (strcat (map (lambda (x) (generate-nim-set-data-action sname x 4)) fields))
+       (indent-line 4 "else:")
+       (indent-line 6 "discard")
+       (indent-line 2 "return bptr"))))
+
+  (define (generate-nim-encoder sname fields)
+    (let ((vsname (>nim-token sname))
+          (tname (>nim-object-type sname)))
+      (string-append
+       (generate-nim-set-fields sname fields)
+       (generate-nim-set-data sname fields)
+       (indent-line 0 "proc encode_into*(" vsname ": ref " tname ", buf:var seq[byte], start: int): int = ")
+       (indent-line 2 "var")
+       (indent-line 4 "dtags: array[0.." (number->string (- (length fields) 1)) ", int]")
+       (indent-line 4 "dlen: int = 0")
+       (indent-line 4 "ptr0 = set_fields(" vsname ", buf, start, dtags, dlen)")
+       (indent-line 4 "ptr1 = set_data(" vsname ", buf, ptr0, dtags, dlen)")
+       (indent-line 2 "return ptr0 + ptr1"))))
+#+end_src
+*** 解碼器
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/nim.scm
+  (define (generate-nim-parse-fields-action sname field indent)
+    (let ((name (>nim-token (field-name field)))
+          (tag (number->string (field-tag field)))
+          (type (field-type field)))
+      (let ((accessor (>nim-accessor sname name)))
+        (string-append
+         (indent-line indent "elif tag == " tag ":")
+         (indent-line (+ indent 2) "tag += 1")
+         (indent-line (+ indent 2) accessor " = cast[" (>nim-type type) "]((value shr 1) - 1)")))))
+
+  (define (generate-nim-parse-fields sname fields)
+    (let ((vsname (>nim-token sname))
+          (tname (>nim-object-type sname)))
+      (string-append
+       (indent-line 0 "proc parse_fields(buf: seq[byte], start: int, " vsname ": var ref " tname ", dtags: var array[0.." (number->string (- (length fields) 1)) ", int], dlen: var int): int =")
+       (indent-line 2 "var")
+       (indent-line 4 "bptr: int = start + 2")
+       (indent-line 4 "tag: int = 0")
+       (indent-line 4 "count: int16 = SHORT(buf, start)")
+       (indent-line 2 "for i in 0..(count - 1):")
+       (indent-line 4 "var value: int16 = SHORT(buf, bptr)")
+       (indent-line 4 "bptr += 2")
+       (indent-line 4 "if (value and 0x01) == 1:")
+       (indent-line 6 "tag += (value - 1) shr 1")
+       (indent-line 4 "elif value == 0:")
+       (indent-line 6 "dtags[dlen] = tag")
+       (indent-line 6 "dlen += 1")
+       (indent-line 6 "tag += 1")
+       (strcat (map (lambda (x) (generate-nim-parse-fields-action sname x 4)) (filter (lambda (y) (primitive-type? (field-type y))) fields)))
+       (indent-line 4 "else:")
+       (indent-line 6 "tag += 1")
+       (indent-line 2 "return bptr"))))
+
+  (define (generate-nim-parse-data-action sname field indent)
+    (let ((name (field-name field))
+          (tag (number->string (field-tag field)))
+          (type (field-type field)))
+      (let ((accessor (>nim-accessor sname name)))
+        (string-append
+         (indent-line indent "of " tag ":")
+         (if (array-type? type)
+             (let ((base-type (array-base-type type)))
+               (case base-type
+                 ((byte)
+                  (string-append
+                   (indent-line (+ indent 2) "var size = INT(buf, bptr)")
+                   (indent-line (+ indent 2) "bptr += 4")
+                   (indent-line (+ indent 2) accessor " = newSeq[int8](size)")
+                   (indent-line (+ indent 2) "for j in 0..(size - 1):")
+                   (indent-line (+ indent 4) accessor "[j] = cast[int8](buf[bptr + j])")
+                   (indent-line (+ indent 2) "bptr += size")))
+                 ((short)
+                  (string-append
+                   (indent-line (+ indent 2) "var size = INT(buf, bptr)")
+                   (indent-line (+ indent 2) "bptr += 4")
+                   (indent-line (+ indent 2) accessor " = newSeq[int16](size div sizeof(int16))")
+                   (indent-line (+ indent 2) "for j in 0..(size div sizeof(int16) - 1):")
+                   (indent-line (+ indent 4) accessor "[j] = SHORT(buf, bptr)")
+                   (indent-line (+ indent 4) "bptr += sizeof(int16)")))
+                 ((int)
+                  (string-append
+                   (indent-line (+ indent 2) "var size = INT(buf, bptr)")
+                   (indent-line (+ indent 2) "bptr += 4")
+                   (indent-line (+ indent 2) accessor " = newSeq[int32](size div sizeof(int32))")
+                   (indent-line (+ indent 2) "for j in 0..(size div sizeof(int32) - 1):")
+                   (indent-line (+ indent 4) accessor "[j] = INT(buf, bptr)")
+                   (indent-line (+ indent 4) "bptr += sizeof(int32)")))
+                 ((long)
+                  (string-append
+                   (indent-line (+ indent 2) "var size = INT(buf, bptr)")
+                   (indent-line (+ indent 2) "bptr += 4")
+                   (indent-line (+ indent 2) accessor " = newSeq[int64](size div sizeof(int64))")
+                   (indent-line (+ indent 2) "for j in 0..(size div sizeof(int64) - 1):")
+                   (indent-line (+ indent 4) accessor "[j] = LONG(buf, bptr)")
+                   (indent-line (+ indent 4) "bptr += sizeof(int64)")))
+                 ((string)
+                  (string-append
+                   (indent-line (+ indent 2) "bptr += 4")
+                   (indent-line (+ indent 2) "var cnt = INT(buf, bptr)")
+                   (indent-line (+ indent 2) "bptr += 4")
+                   (indent-line (+ indent 2) accessor " = newSeq[string](cnt)")
+                   (indent-line (+ indent 2) "for j in 0..(cnt - 1):")
+                   (indent-line (+ indent 4) "var strlen = INT(buf, bptr)")
+                   (indent-line (+ indent 4) "bptr += 4")
+                   (indent-line (+ indent 4) accessor "[j] = newString(strlen)")
+                   (indent-line (+ indent 4) "for k in 0..(strlen - 1):")
+                   (indent-line (+ indent 6) accessor "[j][k] = cast[char](buf[bptr + k])")
+                   (indent-line (+ indent 4) "bptr += strlen")))
+                 (else
+                  (string-append
+                   (indent-line (+ indent 2) "bptr += 4")
+                   (indent-line (+ indent 2) "var cnt = INT(buf, bptr)")
+                   (indent-line (+ indent 2) "bptr += 4")
+                   (indent-line (+ indent 2) accessor " = newSeq[ref " (>nim-object-type (symbol->string base-type)) "](cnt)")
+                   (indent-line (+ indent 2) "for j in 0..(cnt - 1):")
+                   (indent-line (+ indent 4) "var objsize = INT(buf, bptr)")
+                   (indent-line (+ indent 4) "bptr += 4")
+                   (indent-line (+ indent 4) accessor "[j] = " (>nim-token (symbol->string base-type)) ".decode_from(buf, bptr)")
+                   (indent-line (+ indent 4) "bptr += objsize")))))
+             (case type
+               ((byte)
+                (string-append
+                 (indent-line (+ indent 2) "bptr += 4")
+                 (indent-line (+ indent 2) accessor " = cast[int8](buf[bptr])")
+                 (indent-line (+ indent 2) "bptr += 1")))
+               ((short)
+                (string-append
+                 (indent-line (+ indent 2) "bptr += 4")
+                 (indent-line (+ indent 2) accessor " = SHORT(buf, bptr)")
+                 (indent-line (+ indent 2) "bptr += sizeof(int16)")))
+               ((int)
+                (string-append
+                 (indent-line (+ indent 2) "bptr += 4")
+                 (indent-line (+ indent 2) accessor " = INT(buf, bptr)")
+                 (indent-line (+ indent 2) "bptr += sizeof(int32)")))
+               ((long)
+                (string-append
+                 (indent-line (+ indent 2) "bptr += 4")
+                 (indent-line (+ indent 2) accessor " = LONG(buf, bptr)")
+                 (indent-line (+ indent 2) "bptr += sizeof(int64)")))
+               ((string)
+                (string-append
+                 (indent-line (+ indent 2) "var strlen = INT(buf, bptr)")
+                 (indent-line (+ indent 2) "bptr += 4")
+                 (indent-line (+ indent 2) accessor " = newString(strlen)")
+                 (indent-line (+ indent 2) "for j in 0..(strlen - 1):")
+                 (indent-line (+ indent 4) accessor "[i] = cast[char](buf[bptr + j])")
+                 (indent-line (+ indent 2) "bptr += strlen")))
+               (else
+                (string-append
+                 (indent-line (+ indent 2) "var objsize = INT(buf, bptr)")
+                 (indent-line (+ indent 2) "bptr += 4")
+                 (indent-line (+ indent 2) accessor " = " (>nim-token (symbol->string type)) ".decode_from(buf, bptr)")
+                 (indent-line (+ indent 2) "bptr += objsize")))))))))
+
+  (define (generate-nim-parse-data sname fields)
+    (let ((vsname (>nim-token sname))
+          (tname (>nim-object-type sname)))
+      (string-append
+       (indent-line 0 "proc parse_data(buf: seq[byte], start: int, " vsname ": var ref " tname ", dtags: openArray[int], dlen: int): int =")
+       (indent-line 2 "var bptr = start")
+       (indent-line 2 "for i in 0..(dlen - 1):")
+       (indent-line 4 "case dtags[i]:")
+       (strcat (map (lambda (x) (generate-nim-parse-data-action sname x 4)) fields))
+       (indent-line 4 "else:")
+       (indent-line 6 "var size = INT(buf, bptr)")
+       (indent-line 6 "bptr += 4")
+       (indent-line 6 "bptr += size")
+       (indent-line 2 "return bptr"))))
+
+  (define (generate-nim-decoder sname fields)
+    (let ((vsname (>nim-token sname))
+          (tname (>nim-object-type sname)))
+      (string-append
+       (generate-nim-parse-fields sname fields)
+       (generate-nim-parse-data sname fields)
+       (indent-line 0 "proc decode_from*(buf: seq[byte], start: int): ref " tname " =")
+       (indent-line 2 "var")
+       (indent-line 4 vsname ": ref " tname)
+       (indent-line 4 "dtags: array[0.." (number->string (- (length fields) 1)) ", int]")
+       (indent-line 4 "dlen: int = 0")
+       (indent-line 2 "new(" vsname ")")
+       (indent-line 2 "var ptr0: int = parse_fields(buf, start, " vsname ", dtags, dlen)")
+       (indent-line 2 "discard parse_data(buf,  ptr0, " vsname ", dtags, dlen)")
+       (indent-line 2 "return " vsname))))
+#+end_src
+*** 主體
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/nim.scm
+  (define (generate-nim-tightrope-runtime path)
+    (let ((src "
+  template SHORT*(buf: seq[byte], bptr: int): int16 = cast[int16](((cast[int16](buf[bptr]) shl 8) and 0xFF00) or (cast[int16](buf[bptr + 1]) and 0xFF))
+  template SHORT0*(value: int16): byte = cast[byte]((value shr 8) and 0xFF)
+  template SHORT1*(value: int16): byte = cast[byte](value and 0xFF)
+
+  template assign_short*(buf: seq[byte], bptr: int, value: int16): untyped =
+    buf[bptr] = SHORT0(value)
+    bptr += 1
+    buf[bptr] = SHORT1(value)
+    bptr += 1
+
+  template assign_short_0*(buf: seq[byte], bptr: int): untyped =
+    buf[bptr] = 0
+    bptr += 1
+    buf[bptr] = 0
+    bptr += 1
+
+  template INT*(buf: seq[byte], bptr: int): int32 = cast[int32](((cast[int32](buf[bptr]) shl 24) and 0xFF000000) or ((cast[int32](buf[bptr + 1]) shl 16) and 0xFF0000) or ((cast[int32](buf[bptr + 2]) shl 8) and 0xFF00) or (cast[int32](buf[bptr + 3]) and 0xFF))
+  template INT0(value: int32): byte = cast[byte]((value shr 24) and 0xFF)
+  template INT1(value: int32): byte = cast[byte]((value shr 16) and 0xFF)
+  template INT2(value: int32): byte = cast[byte]((value shr 8) and 0xFF)
+  template INT3(value: int32): byte = cast[byte](value and 0xFF)
+
+  template assign_int*(buf: seq[byte], bptr: int, value: int32): untyped =
+    buf[bptr] = INT0(value)
+    bptr += 1
+    buf[bptr] = INT1(value)
+    bptr += 1
+    buf[bptr] = INT2(value)
+    bptr += 1
+    buf[bptr] = INT3(value)
+    bptr += 1
+
+  template LONG*(buf: seq[byte], bptr: int): int64 = cast[int64](((cast[int64](buf[bptr]) shl 56) and 0xFF00000000000000) or ((cast[int64](buf[bptr + 1]) shl 48) and 0xFF000000000000) or ((cast[int64](buf[bptr + 2]) shl 40) and 0xFF0000000000) or ((cast[int64](buf[bptr + 3]) shl 32) and 0xFF00000000) or ((cast[int64](buf[bptr + 4]) shl 24) and 0xFF000000) or ((cast[int64](buf[bptr + 5]) shl 16) and 0xFF0000) or ((cast[int64](buf[bptr + 6]) shl 8) and 0xFF00) or (cast[int64](buf[bptr + 7]) and 0xFF))
+  template LONG0(value: int64): byte = cast[byte]((value shr 56) and 0xFF)
+  template LONG1(value: int64): byte = cast[byte]((value shr 48) and 0xFF)
+  template LONG2(value: int64): byte = cast[byte]((value shr 40) and 0xFF)
+  template LONG3(value: int64): byte = cast[byte]((value shr 32) and 0xFF)
+  template LONG4(value: int64): byte = cast[byte]((value shr 24) and 0xFF)
+  template LONG5(value: int64): byte = cast[byte]((value shr 16) and 0xFF)
+  template LONG6(value: int64): byte = cast[byte]((value shr 08) and 0xFF)
+  template LONG7(value: int64): byte = cast[byte](value and 0xFF)
+
+  template assign_long*(buf: seq[byte], bptr: int, value: int64): untyped =
+    buf[bptr] = LONG0(value)
+    bptr += 1
+    buf[bptr] = LONG1(value)
+    bptr += 1
+    buf[bptr] = LONG2(value)
+    bptr += 1
+    buf[bptr] = LONG3(value)
+    bptr += 1
+    buf[bptr] = LONG4(value)
+    bptr += 1
+    buf[bptr] = LONG5(value)
+    bptr += 1
+    buf[bptr] = LONG6(value)
+    bptr += 1
+    buf[bptr] = LONG7(value)
+    bptr += 1
+
+
+  proc padding*(tag: int16, nexttag: int16, buf: var seq[byte], start: int, count: var int16): int =
+    if tag == nexttag:
+      result = 0
+    else:
+      let t: int16 = (nexttag - tag) * 2 + 1
+      buf[start] = SHORT0(t)
+      buf[start + 1] = SHORT1(t)
+      count += 1
+      result = 2
+  "))
+      (with-output-to-file
+          (string-append path "tightrope.nim")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-nim-serial env struct dir)
+    (let ((name (struct-name struct))
+          (fields (struct-fields struct)))
+      (let ((calcsize (generate-nim-calculate-size name fields))
+            (encoder (generate-nim-encoder name fields))
+            (decoder (generate-nim-decoder name fields)))
+        (with-output-to-file
+            (string-append dir name ".nim")
+          (lambda ()
+            (write-string (string-append calcsize encoder decoder)))
+          (list 'append)))))
+
+  (define (generate-nim-serials env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (generate-nim-tightrope-runtime path)
+      (generate-nim-zero-pack env dir)
+      (for-each
+       (lambda (entity) (generate-nim-serial env entity path))
+       (get-structs env))))
+#+end_src
+** 壓縮與解壓
+Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調用。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/nim.scm
+
+  (define (generate-nim-zero-pack-source path)
+    (let ((src "
+  import sequtils
+  type
+    State = enum
+      NORMAL, OO, FF
+
+  proc zeropack*(src: seq[byte]): seq[byte] =
+    var
+      dst: seq[byte] = newSeq[byte](len(src))
+      ffcnt: byte = 0
+      ffpos: int = 0
+      oocnt: byte = 0
+      oopos: int = 0
+      dptr: int = 1 # reversed for esimated size
+      bytes: array[8, byte]
+      bptr: int = 0
+      bitmap: byte = 0
+      blen: int = len(src) + (if (len(src) mod 8) != 0: (8 - len(src) mod 8) else: 0)
+      buf: seq[byte] = newSeq[byte](blen)
+      state: State = NORMAL
+    for i in 0..(len(src) - 1):
+      buf[i] = src[i]
+    for i in 0..((blen div 8) - 1):
+      bptr = 0
+      bitmap = 0
+      for j in 0..7:
+        if buf[i * 8 + j] != 0:
+          bitmap = bitmap or cast[byte]((1 shl (8 - j - 1)))
+          bytes[bptr] = buf[i * 8 + j]
+          bptr += 1
+      case bitmap:
+        of 0x00:
+          case state:
+            of OO:
+              if oocnt == 0xFF:
+                dst[oopos] = 0xFF
+                dst[dptr] = 0x00
+                dptr += 1
+                oopos = dptr
+                dptr += 1
+                oocnt = 1
+              else:
+                oocnt += 1
+            of FF:
+              dst[ffpos] = ffcnt
+              state = OO
+            else:
+              dst[dptr] = 0x00
+              dptr += 1
+              oopos = dptr
+              dptr += 1
+              oocnt = 1
+              state = OO
+        of 0xFF:
+          case state:
+            of OO:
+              dst[oopos] = oocnt
+              state = FF
+            of FF:
+              if ffcnt == 0xFF:
+                dst[ffpos] = 0xFF
+                dst[dptr] = 0xFF
+                dptr += 1
+                ffpos = dptr
+                dptr += 1
+                ffcnt = 1
+              else:
+                ffcnt += 1
+            else:
+              dst[dptr] = 0xFF
+              dptr += 1
+              ffpos = dptr
+              dptr += 1
+              ffcnt = 1
+              state = FF
+          for k in 0..(bptr - 1):
+            dst[dptr] = bytes[k]
+            dptr += 1
+        else:
+          case state:
+            of OO:
+              dst[oopos] = oocnt
+              state = NORMAL
+            of FF:
+              dst[ffpos] = ffcnt
+              state = NORMAL
+            else:
+              discard
+          dst[dptr] = bitmap
+          dptr += 1
+          for k in 0..(bptr - 1):
+            dst[dptr] = bytes[k]
+            dptr += 1
+    if cast[int](oocnt) > 0:
+      dst[oopos] = oocnt
+    elif cast[int](ffcnt) > 0:
+      dst[ffpos] = ffcnt
+    dst[0] = cast[byte](blen div dptr + (if (blen mod dptr != 0): 1 else: 0))
+    delete(dst, dptr + 1, len(dst))
+    return dst
+
+  proc unzeropack*(src: seq[byte]): seq[byte] =
+    var
+      slen: int = len(src)
+      dst: seq[byte] = newSeq[byte](slen * cast[int](src[0]))
+      sptr: int = 1
+      dptr: int = 0
+      cnt: int = 0
+    while sptr < slen:
+      case src[sptr]:
+        of 0:
+          cnt = cast[int](src[sptr + 1])
+          for i in 0..(cnt * 8 - 1):
+            dst[i] = 0
+          dptr += cnt * 8
+          sptr += 2
+        of 0xFF:
+          cnt = cast[int](src[sptr + 1])
+          for i in 0..(cnt * 8 - 1):
+            dst[dptr + i] = src[sptr + 2 + i]
+          dptr += cnt * 8
+          sptr += 2 + cnt * 8
+        else:
+          cnt = 0
+          var bitmap = src[sptr]
+          for i in 0..7:
+            if (bitmap and cast[byte](1 shl (8 - i - 1))) != 0:
+              cnt += 1
+              dst[dptr] = src[sptr + cnt]
+              dptr += 1
+            else:
+              dst[dptr] = 0
+              dptr += 1
+          sptr += cnt + 1
+    return dst
+  "))
+      (with-output-to-file
+          (string-append path "zeropack.nim")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-nim-zero-pack env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (generate-nim-zero-pack-source path)))
+#+end_src
+
+** 輔助函數
+#+begin_src scheme :noweb-ref utility
+  (define *nim-keywords* '("addr" "and" "as" "asm" "atomic" "bind" "block" "break" "case" "cast" "concept" "const" "continue" "converter" "defer" "discard" "distinct" "div" "do" "elif" "else" "end" "enum" "except" "export" "finally" "for" "from" "func" "generic" "if" "import" "in" "include" "interface" "is" "isnot" "iterator" "let" "macro" "method" "mixin" "mod" "nil" "not" "notin" "object" "of" "or" "out" "proc" "ptr" "raise" "ref" "return" "shl" "shr" "static" "template" "try" "tuple" "type" "using" "var" "when" "while" "with" "without" "xor" "yield"))
+
+  (define (>nim-token name)
+    (let loop ((src (map char-downcase (string->list name)))
+               (dst '()))
+      (if (null? src)
+          (let ((result (list->string (reverse dst))))
+            (if (reduce (lambda (acc x) (or acc x)) #f (map (lambda (x) (equal? x result)) *nim-keywords*))
+                (begin
+                  (display (strcat (list "\"" name "\" is a keyword of nim language")))
+                  (abort))
+                result))
+          (let ((chr (car src))
+                (rest (cdr src)))
+            (if (eq? chr #\-)
+                (loop rest (cons #\_ dst))
+                (loop rest (cons chr dst)))))))
+
+  (define (>nim-object-type type)
+    (strcat (map (lambda (x) (string-titlecase x)) (string-split type ".-_"))))
+
+  (define (>nim-type type)
+    (case type
+      ((byte) "int8")
+      ((short) "int16")
+      ((int) "int32")
+      ((long) "int64")
+      ((string) "string")
+      (else (>nim-token (symbol->string type)))))
+
+  (define (>nim-accessor object field)
+    (string-append (>nim-token object) "." (>nim-token field)))
+#+end_src

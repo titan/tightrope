@@ -27,19 +27,19 @@ endif
 $(DOCUMENT): $(DOCSRC) $(HOME)/templates/pandoc-template.tex $(HOME)/templates/style.sty $(PNGS)
 	cd $(BUILDDIR);pandoc -H $(HOME)/templates/style.sty --latex-engine=xelatex --template=$(HOME)/templates/pandoc-template.tex -f org -o $@ $(DOCSRC)
 
-$(DOCSRC): prebuild | core.org java.org erlang.org clang.org
-	$(CAT) core.org java.org erlang.org clang.org > $(DOCSRC)
+$(DOCSRC): prebuild | core.org java.org erlang.org clang.org nim.org
+	$(CAT) core.org java.org erlang.org clang.org nim.org > $(DOCSRC)
 
-$(TARGETSRC): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/main.scm
+$(TARGETSRC): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/main.scm
 	$(ECHO) "(import (chezscheme))" > $(TARGETSRC)
-	$(CAT) $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/main.scm >> $(TARGETSRC)
+	$(CAT) $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/main.scm >> $(TARGETSRC)
 	$(ECHO) "(main (command-line))" >> $(TARGETSRC)
 	$(SED) -i -r '/\(load \".*\"\)/d' $(TARGETSRC)
 
 $(TARGETOBJ): $(TARGETSRC)
 	$(ECHO) '(compile-program "$(TARGETSRC)")' | chez-scheme -q --optimize-level 3
 
-$(TARGET):
+$(TARGET): | prebuild
 	$(ECHO) '#! /bin/sh' > $(TARGET)
 	$(ECHO) 'LINK=`readlink -f $$0`' >> $(TARGET)
 	$(ECHO) 'BASE=`dirname $$LINK`' >> $(TARGET)
@@ -59,6 +59,9 @@ $(BUILDDIR)/erlang.scm: erlang.org | prebuild
 	emacs $< --batch -f org-babel-tangle --kill
 
 $(BUILDDIR)/clang.scm: clang.org | prebuild
+	emacs $< --batch -f org-babel-tangle --kill
+
+$(BUILDDIR)/nim.scm: nim.org | prebuild
 	emacs $< --batch -f org-babel-tangle --kill
 
 clean:
