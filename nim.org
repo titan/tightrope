@@ -606,7 +606,7 @@
             (encoder (generate-nim-encoder name fields))
             (decoder (generate-nim-decoder name fields)))
         (with-output-to-file
-            (string-append dir name ".nim")
+            (string-append dir (>nim-token name) ".nim")
           (lambda ()
             (write-string (string-append calcsize encoder decoder)))
           (list 'append)))))
