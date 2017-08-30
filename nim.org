@@ -371,6 +371,8 @@
        (indent-line 4 "bptr: int = start + 2")
        (indent-line 4 "tag: int = 0")
        (indent-line 4 "count: int16 = SHORT(buf, start)")
+       (indent-line 2 "if count == 0:")
+       (indent-line 4 "return 0")
        (indent-line 2 "for i in 0..(count - 1):")
        (indent-line 4 "var value: int16 = SHORT(buf, bptr)")
        (indent-line 4 "bptr += 2")
@@ -510,12 +512,12 @@
        (generate-nim-parse-data sname fields)
        (indent-line 0 "proc decode_from*(buf: seq[byte], start: int): ref " tname " =")
        (indent-line 2 "var")
-       (indent-line 4 vsname ": ref " tname)
+       (indent-line 4 vsname ": ref " tname " = new(" tname ")")
        (indent-line 4 "dtags: array[0.." (number->string (- (length fields) 1)) ", int]")
        (indent-line 4 "dlen: int = 0")
-       (indent-line 2 "new(" vsname ")")
        (indent-line 2 "var ptr0: int = parse_fields(buf, start, " vsname ", dtags, dlen)")
-       (indent-line 2 "discard parse_data(buf,  ptr0, " vsname ", dtags, dlen)")
+       (indent-line 2 "if ptr0 > 0:")
+       (indent-line 4 "discard parse_data(buf,  ptr0, " vsname ", dtags, dlen)")
        (indent-line 2 "return " vsname))))
 #+end_src
 *** 主體
@@ -635,7 +637,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
 
   proc zeropack*(src: seq[byte]): seq[byte] =
     var
-      dst: seq[byte] = newSeq[byte](len(src))
+      dst: seq[byte] = newSeq[byte](len(src) + 1)
       ffcnt: byte = 0
       ffpos: int = 0
       oocnt: byte = 0
@@ -728,11 +730,11 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     delete(dst, dptr + 1, len(dst))
     return dst
 
-  proc unzeropack*(src: seq[byte]): seq[byte] =
+  proc unzeropack*(src: seq[byte], start: int): seq[byte] =
     var
       slen: int = len(src)
       dst: seq[byte] = newSeq[byte](slen * cast[int](src[0]))
-      sptr: int = 1
+      sptr: int = start + 1
       dptr: int = 0
       cnt: int = 0
     while sptr < slen:
@@ -762,6 +764,8 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
               dptr += 1
           sptr += cnt + 1
     return dst
+
+  proc unzeropack*(src: seq[byte]): seq[byte] = unzeropack(src, 0)
   "))
       (with-output-to-file
           (string-append path "zeropack.nim")
