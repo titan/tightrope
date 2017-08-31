@@ -163,7 +163,7 @@
               (indent-line (+ indent 6) "assign_short(buf, bptr, t)")
               (indent-line (+ indent 4) "else:")
               (indent-line (+ indent 6) "assign_short_0(buf, bptr)")
-              (indent-line (+ indent 6) "dtags[dlen] = 1")
+              (indent-line (+ indent 6) "dtags[dlen] = " tag)
               (indent-line (+ indent 6) "dlen += 1"))
              (string-append
               (indent-line (+ indent 2) "if " accessor " != nil:")
