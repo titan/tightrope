@@ -730,14 +730,14 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     delete(dst, dptr + 1, len(dst))
     return dst
 
-  proc unzeropack*(src: seq[byte], start: int): seq[byte] =
+  proc unzeropack*(src: seq[byte], start: int, slen: int): seq[byte] =
     var
-      slen: int = len(src)
-      dst: seq[byte] = newSeq[byte](slen * cast[int](src[0]))
+      dst: seq[byte] = newSeq[byte](slen * cast[int](src[start]))
       sptr: int = start + 1
       dptr: int = 0
       cnt: int = 0
-    while sptr < slen:
+      stop: int = start + slen
+    while sptr < stop:
       case src[sptr]:
         of 0:
           cnt = cast[int](src[sptr + 1])
@@ -763,9 +763,11 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
               dst[dptr] = 0
               dptr += 1
           sptr += cnt + 1
+    if dptr + 1 < len(dst):
+      delete(dst, dptr + 1, len(dst))
     return dst
 
-  proc unzeropack*(src: seq[byte]): seq[byte] = unzeropack(src, 0)
+  proc unzeropack*(src: seq[byte]): seq[byte] = unzeropack(src, 0, len(src))
   "))
       (with-output-to-file
           (string-append path "zeropack.nim")
