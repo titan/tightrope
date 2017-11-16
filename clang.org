@@ -74,7 +74,7 @@
                 (indent-line 0 "#ifdef " zeropack-macro-name)
                 (indent-line 2 "int " name "_encode_zeropack(" sname " *, uint8_t *, int);")
                 (indent-line 2 "int " name "_estimate_zeropack_size(uint8_t *, int);")
-                (indent-line 2 "int " name "_decode_zeropack(uint8_t *, int, " sname " *);")
+                (indent-line 2 "int " name "_decode_zeropack(uint8_t *, int, uint8_t *, " sname " *);")
                 (indent-line 0 "#endif")
                 setters
                 len-getters
@@ -933,9 +933,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
        (indent-line 2 "return ptr0 + ptr1;")
        (indent-line 0 "}")
        (indent-line 0 "#ifdef " macro-name)
-       (indent-line 0 "int " sname "_decode_zeropack(uint8_t * buf, int len, " (>clang-struct-name sname)" * " sname ") {")
-       (indent-line 2 "uint8_t factor = buf[0];")
-       (indent-line 2 "uint8_t uzpbuf[len * factor];")
+       (indent-line 0 "int " sname "_decode_zeropack(uint8_t * buf, int len, uint8_t * uzpbuf, " (>clang-struct-name sname)" * " sname ") {")
        (indent-line 2 "unzeropack(buf, len, uzpbuf);")
        (indent-line 2 "return " sname "_decode(uzpbuf, " sname ");")
        (indent-line 0 "}")

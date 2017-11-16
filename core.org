@@ -139,7 +139,7 @@ capnproto 類似的壓縮零方法：
 ** 命令行接口
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/main.scm
   (define (usage prog)
-    (let ((prompt (string-append "Usage: chez-scheme --program " prog " [option] <source files>\nOptions:\n"))
+    (let ((prompt (string-append "Usage: scheme --program " prog " [option] <source files>\nOptions:\n"))
           (options '(" -entity        Generate entity code\n"
                      " -serial        Generate serialize/deserialize code\n"
                      " -erlang        Generate codes for Erlang\n"
