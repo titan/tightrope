@@ -742,7 +742,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
         of 0:
           cnt = cast[int](src[sptr + 1])
           for i in 0..(cnt * 8 - 1):
-            dst[i] = 0
+            dst[dptr + i] = 0
           dptr += cnt * 8
           sptr += 2
         of 0xFF:
