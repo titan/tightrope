@@ -4,7 +4,7 @@
 #+DATE:      <2015-08-01 Sat>
 
 Tightrope 受到 sproto 的強力啓發，力圖成爲簡單有效的二進制數據結構編碼器。類似的
-編碼器還有有 protobuffer, capnproto 等。
+編碼器還有 protobuffer, capnproto 等。
 
 * Source Protocol
 
