@@ -37,32 +37,37 @@ $(TARGETSRC): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $
 	$(SED) -i -r '/\(load \".*\"\)/d' $(TARGETSRC)
 
 $(TARGETOBJ): $(TARGETSRC)
-	$(ECHO) '(compile-program "$(TARGETSRC)")' | scheme -q --optimize-level 3
+	$(ECHO) '(compile-program "$(TARGETSRC)")' | chez-scheme -q --optimize-level 3
 
 $(TARGET): | prebuild
 	$(ECHO) '#! /bin/sh' > $(TARGET)
 	$(ECHO) 'LINK=`readlink -f $$0`' >> $(TARGET)
 	$(ECHO) 'BASE=`dirname $$LINK`' >> $(TARGET)
-	$(ECHO) 'scheme --program $$BASE/$(NAME).so $$@' >> $(TARGET)
+	$(ECHO) 'chez-scheme --program $$BASE/$(NAME).so $$@' >> $(TARGET)
 	$(CHMOD) 755 $(TARGET)
 
 $(BUILDDIR)/%.png: %.aa | prebuild
 	java -jar /opt/ditaa0_9.jar -e utf-8 -s 1.0 $< $@
 
 $(BUILDDIR)/core.scm $(BUILDDIR)/main.scm: core.org | prebuild
-	emacs $< --batch -f org-babel-tangle --kill
+	org-tangle $<
+	#emacs $< --batch -f org-babel-tangle --kill
 
 $(BUILDDIR)/java.scm: java.org | prebuild
-	emacs $< --batch -f org-babel-tangle --kill
+	org-tangle $<
+	#emacs $< --batch -f org-babel-tangle --kill
 
 $(BUILDDIR)/erlang.scm: erlang.org | prebuild
-	emacs $< --batch -f org-babel-tangle --kill
+	org-tangle $<
+	#emacs $< --batch -f org-babel-tangle --kill
 
 $(BUILDDIR)/clang.scm: clang.org | prebuild
-	emacs $< --batch -f org-babel-tangle --kill
+	org-tangle $<
+	#emacs $< --batch -f org-babel-tangle --kill
 
 $(BUILDDIR)/nim.scm: nim.org | prebuild
-	emacs $< --batch -f org-babel-tangle --kill
+	org-tangle $<
+	#emacs $< --batch -f org-babel-tangle --kill
 
 clean:
 	$(RM) $(BUILDDIR) -rf
