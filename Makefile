@@ -6,6 +6,8 @@ TARGETOBJ:=$(TARGET).so
 DOCUMENT:=$(BUILDDIR)/$(NAME).pdf
 DOCSRC:=$(BUILDDIR)/$(NAME).org
 PNGS+=$(patsubst ./%,$(BUILDDIR)/%,$(patsubst %.aa,%.png,$(shell find . -name "*.aa")))
+THEME=eisvogel
+FONT=FZYaSong-GBK
 
 CAT:=cat
 CHMOD:=chmod
@@ -24,8 +26,8 @@ ifeq "$(wildcard $(BUILDDIR))" ""
 	@mkdir -p $(BUILDDIR)
 endif
 
-$(DOCUMENT): $(DOCSRC) $(HOME)/templates/pandoc-template.tex $(HOME)/templates/style.sty $(PNGS)
-	cd $(BUILDDIR);pandoc -H $(HOME)/templates/style.sty --latex-engine=xelatex --template=$(HOME)/templates/pandoc-template.tex -f org -o $@ $(DOCSRC)
+$(DOCUMENT): $(DOCSRC) $(PNGS)
+	cd $(BUILDDIR); pandoc --pdf-engine=xelatex --template $(THEME).tex -V CJKmainfont:$(FONT) -o $@ $(DOCSRC); cd -
 
 $(DOCSRC): prebuild | core.org java.org erlang.org clang.org nim.org python.org
 	$(CAT) core.org java.org erlang.org clang.org nim.org python.org > $(DOCSRC)

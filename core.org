@@ -2,6 +2,12 @@
 #+AUTHOR:    Titan
 #+EMAIL:     howay@kachebang.com
 #+DATE:      <2015-08-01 Sat>
+#+SUBTITLE: A tool to generate serializing/unserializing source code
+#+titlepage: true
+#+titlepage-color: 06386e
+#+titlepage-text-color: FFFFFF
+#+titlepage-rule-color: FFFFFF
+#+titlepage-rule-height: 1
 #+STARTUP: indent
 
 Tightrope 受到 sproto 的強力啓發，力圖成爲簡單有效的二進制數據結構編碼器。類似的
@@ -20,7 +26,7 @@ struct 分別是兩個頂級元素。struct 定義了所需的數據結構，而
 4. long
 5. string
 
-數組類型就是在基本類型後面加上 '\*'，比如 'int\*'。浮點類型不支持，用
+數組類型就是在基本類型後面加上 '*'，比如 'int*'。浮點類型不支持，用
 fixed-point 數來模擬。自定義類型可以是除了基本類型外，所有合法的名字。
 
 下面是一個來自真實項目的例子：
@@ -95,7 +101,7 @@ struct 中的每個字段都有一個編號，範圍是 [0, 65535]。不要求�
 
 #+CAPTION: 定長類型數組佈局方式圖
 #+LABEL: fig:fixed-type-array-layout
-[[fixed-type-array-layout.png]]
+[[./fixed-type-array-layout.png]]
 
 size 記錄的並非數組的長度，而是以字節(byte)爲單位，數組內容的長度。比如，長度爲
 5 的 byte 數組，其 size 的值是 5；而長度爲 5 的 long 數組，其 size 的值爲 40 。
@@ -111,7 +117,7 @@ size 記錄的並非數組的長度，而是以字節(byte)爲單位，數組內
 
 #+CAPTION: 變長類型數組佈局方式圖
 #+LABEL: fig:flexible-type-array-layout
-[[flexible-type-array-layout.png]]
+[[./flexible-type-array-layout.png]]
 
 | field     | meaning                                      |
 |-----------+----------------------------------------------|
