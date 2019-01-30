@@ -27,12 +27,12 @@ endif
 $(DOCUMENT): $(DOCSRC) $(HOME)/templates/pandoc-template.tex $(HOME)/templates/style.sty $(PNGS)
 	cd $(BUILDDIR);pandoc -H $(HOME)/templates/style.sty --latex-engine=xelatex --template=$(HOME)/templates/pandoc-template.tex -f org -o $@ $(DOCSRC)
 
-$(DOCSRC): prebuild | core.org java.org erlang.org clang.org nim.org
-	$(CAT) core.org java.org erlang.org clang.org nim.org > $(DOCSRC)
+$(DOCSRC): prebuild | core.org java.org erlang.org clang.org nim.org python.org
+	$(CAT) core.org java.org erlang.org clang.org nim.org python.org > $(DOCSRC)
 
-$(TARGETSRC): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/main.scm
+$(TARGETSRC): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/python.scm $(BUILDDIR)/main.scm
 	$(ECHO) "(import (chezscheme))" > $(TARGETSRC)
-	$(CAT) $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/main.scm >> $(TARGETSRC)
+	$(CAT) $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/python.scm $(BUILDDIR)/main.scm >> $(TARGETSRC)
 	$(ECHO) "(main (command-line))" >> $(TARGETSRC)
 	$(SED) -i -r '/\(load \".*\"\)/d' $(TARGETSRC)
 
@@ -51,23 +51,21 @@ $(BUILDDIR)/%.png: %.aa | prebuild
 
 $(BUILDDIR)/core.scm $(BUILDDIR)/main.scm: core.org | prebuild
 	org-tangle $<
-	#emacs $< --batch -f org-babel-tangle --kill
 
 $(BUILDDIR)/java.scm: java.org | prebuild
 	org-tangle $<
-	#emacs $< --batch -f org-babel-tangle --kill
 
 $(BUILDDIR)/erlang.scm: erlang.org | prebuild
 	org-tangle $<
-	#emacs $< --batch -f org-babel-tangle --kill
 
 $(BUILDDIR)/clang.scm: clang.org | prebuild
 	org-tangle $<
-	#emacs $< --batch -f org-babel-tangle --kill
 
 $(BUILDDIR)/nim.scm: nim.org | prebuild
 	org-tangle $<
-	#emacs $< --batch -f org-babel-tangle --kill
+
+$(BUILDDIR)/python.scm: python.org | prebuild
+	org-tangle $<
 
 clean:
 	$(RM) $(BUILDDIR) -rf

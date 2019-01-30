@@ -1,0 +1,642 @@
+* python 後端實現
+
+** 實體對象
+在 Tightrope python 實現中，用 class 來實現數據結構，實體對象的名稱遵循 python 語言的命名規則。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/python.scm
+  <<utility>>
+
+  (define (generate-python-import type)
+    (string-append "import " (>python-token (symbol->string type)) "\n"))
+
+  (define (generate-python-field-declare field)
+    (let ((name (>python-token (field-name field)))
+          (type (field-type field)))
+      (if (array-type? type)
+          (string-append name ": Sequence[" (>python-type type)"] = []")
+          (string-append name ": " (>python-type type) " = "
+                         (if (custom-type? type)
+                             "None"
+                             (if (eq? 'string type)
+                                 "None"
+                                 "0"))))))
+
+  (define (generate-python-field-str-format field)
+    (let ((name (>python-token (field-name field)))
+          (type (field-type field)))
+      (if (primitive-type? type)
+          (string-append "\"" name "\": %d")
+          (string-append "\"" name "\": %s"))))
+
+  (define (generate-python-entity struct dir)
+    (let ((sname (>python-token (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((tname (>python-object-type sname))
+            (field-decls (strcat (map (lambda (x) (indent-line 2 (generate-python-field-declare x))) fields)))
+            (imports (strcat (unique (reduce (lambda (acc field)
+                                               (let ((type
+                                                      (if (array-type? (field-type field))
+                                                          (array-base-type (field-type field))
+                                                          (field-type field))))
+                                                 (if (custom-type? type)
+                                                     (cons (generate-python-import type) acc)
+                                                     acc)))
+                                             '() fields))))
+            (init (string-append
+                   (indent-line 2 "def __init__(self):")
+                   (indent-line 4 "pass")))
+            (str (string-append
+                  (indent-line 2 "def __str__(self):")
+                  (indent-line
+                   4
+                   "return '{"
+                   (reduce
+                    (lambda (acc y)
+                      (if (> (string-length acc) 0)
+                          (string-append acc ", " y)
+                          y))
+                    ""
+                    (map
+                     (lambda (x)
+                       (generate-python-field-str-format x))
+                     fields))
+                   "}' % ("
+                   (reduce
+                    (lambda (acc x)
+                      (if (eq? (field-type x) 'string)
+                          (string-append
+                           (if (> (string-length acc) 0) (string-append acc ", None if self.") "None if self.")
+                           (>python-token (field-name x))
+                           " else '%s' % self."
+                           (>python-token (field-name x)))
+                          (string-append
+                           (if (> (string-length acc) 0) (string-append acc ", self.") "self.")
+                           (>python-token (field-name x)))))
+                    ""
+                    fields)
+                  ")"))))
+        (let ((content
+               (string-append
+                "from typing import Tuple, Sequence\n"
+                "import tightrope\n"
+                imports
+                (indent-line 0 "class " tname ":")
+                field-decls
+                init
+                str)))
+          (with-output-to-file
+              (string-append dir sname ".py")
+            (lambda ()
+              (write-string content))
+            (list 'replace))))))
+
+  (define (generate-python-entities env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (for-each
+       (lambda (entity) (generate-python-entity entity path))
+       (get-structs env))))
+#+end_src
+
+** 序列化與反序列化
+*** 編碼器
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/python.scm
+  (define (generate-python-set-field-action sname field indent)
+    (let ((type (field-type field))
+          (tag (number->string (field-tag field)))
+          (name (>python-token (field-name field))))
+      (let ((accessor (>python-accessor sname name)))
+        (string-append
+         (if (primitive-type? type)
+             (string-append
+              (indent-line (+ indent 2) "if " accessor " != 0:")
+              (indent-line (+ indent 4) "count += 1")
+              (indent-line (+ indent 4) "(tmpbuf, count) = tightrope.padding(tag, nexttag, count)")
+              (indent-line (+ indent 4) "if tmpbuf:")
+              (indent-line (+ indent 6) "buf += tmpbuf")
+              (indent-line (+ indent 4) "tag = nexttag + 1")
+              (indent-line (+ indent 4) "if " accessor " > 0" (if (eq? type 'byte) ":" (string-append " and " accessor " < 16383:")))
+              (indent-line (+ indent 6) "t: int = (" accessor " + 1) * 2")
+              (indent-line (+ indent 6) "buf += t.to_bytes(2, 'big')")
+              (indent-line (+ indent 4) "else:")
+              (indent-line (+ indent 6) "buf += zero.to_bytes(2, 'big')")
+              (indent-line (+ indent 6) "dtags.append(" tag ")"))
+             (string-append
+              (indent-line (+ indent 2) "if " accessor " != None:")
+              (indent-line (+ indent 4) "dtags.append(" tag ")")
+              (indent-line (+ indent 4) "count += 1")
+              (indent-line (+ indent 4) "(tmpbuf, count) = tightrope.padding(tag, nexttag, count)")
+              (indent-line (+ indent 4) "if tmpbuf:")
+              (indent-line (+ indent 6) "buf += tmpbuf")
+              (indent-line (+ indent 4) "tag = nexttag + 1")
+              (indent-line (+ indent 4) "buf += zero.to_bytes(2, 'big')")))))))
+
+  (define (generate-python-set-fields sname fields)
+    (define (iterator-action sname fields)
+      (let loop ((tmp "")
+                 (first? #t)
+                 (fs fields))
+        (if (null? fs)
+            tmp
+            (let* ((tag (number->string (field-tag (car fs))))
+                   (pre (if first?
+                            (indent-line 4 "if nexttag == " tag ":")
+                            (indent-line 4 "elif nexttag == " tag ":"))))
+              (loop (string-append tmp pre (generate-python-set-field-action sname (car fs) 4)) #f (cdr fs))))))
+    (let ((vsname (>python-token sname))
+          (tname (>python-object-type sname))
+          (max-tag+1 (number->string (+ (apply max (map (lambda(x) (field-tag x)) fields)) 1))))
+      (string-append
+       (indent-line 0 "def __set_fields(" vsname ": " tname ") -> Tuple[bytes, Sequence[int]]:")
+       (indent-line 2 "buf: bytes = b''")
+       (indent-line 2 "dtags: List[int] = []")
+       (indent-line 2 "zero: int = 0")
+       (indent-line 2 "count: int = 0")
+       (indent-line 2 "tag: int = 0")
+       (indent-line 2 "nexttag: int = 0")
+       (indent-line 2 "while nexttag < " max-tag+1 ":")
+       (iterator-action sname fields)
+       (indent-line 4 "else:")
+       (indent-line 6 "pass")
+       (indent-line 4 "nexttag += 1")
+       (indent-line 2 "return (count.to_bytes(2, 'big') + buf, dtags)"))))
+
+  (define (generate-python-set-data-action sname field indent)
+    (let ((tag (number->string (field-tag field)))
+          (type (field-type field))
+          (name (>python-token (field-name field))))
+      (let ((accessor (>python-accessor sname name)))
+        (string-append
+         (if (array-type? type)
+             (let ((base-type (array-base-type type)))
+               (case base-type
+                 ((byte)
+                  (string-append
+                   (indent-line (+ indent 2) "buf += len(" accessor ").to_bytes(4, 'big')")
+                   (indent-line (+ indent 2) "buf += " accessor)))
+                 ((short)
+                  (string-append
+                   (indent-line (+ indent 2) "assize: int = len(" accessor ") * 2")
+                   (indent-line (+ indent 2) "buf += assize.to_bytes(4, 'big')")
+                   (indent-line (+ indent 2) "for e in " accessor ":")
+                   (indent-line (+ indent 4) "buf += e.to_bytes(2, 'big')")))
+                 ((int)
+                  (string-append
+                   (indent-line (+ indent 2) "aisize: int = len(" accessor ") * 4")
+                   (indent-line (+ indent 2) "buf += aisize.to_bytes(4, 'big')")
+                   (indent-line (+ indent 2) "for e in " accessor ":")
+                   (indent-line (+ indent 4) "buf += e.to_bytes(4, 'big')")))
+                 ((long)
+                  (string-append
+                   (indent-line (+ indent 2) "var alsize: int = len(" accessor ") * 8")
+                   (indent-line (+ indent 2) "buf += alsize.to_bytes(8, 'big')")
+                   (indent-line (+ indent 2) "for e in " accessor ":")
+                   (indent-line (+ indent 4) "buf += e.to_bytes(8, 'big')")))
+                 ((string)
+                  (string-append
+                   (indent-line (+ indent 2) "astrsize: int = 4")
+                   (indent-line (+ indent 2) "tmp: bytes = len(" accessor ").to_bytes(4, 'big')")
+                   (indent-line (+ indent 2) "for s in " accessor ":")
+                   (indent-line (+ indent 4) "encoded: bytes = s.encode('utf-8')")
+                   (indent-line (+ indent 4) "slen: int = len(encoded)")
+                   (indent-line (+ indent 4) "astrsize += slen + 4")
+                   (indent-line (+ indent 4) "tmp += slen.to_bytes(4, 'big')")
+                   (indent-line (+ indent 4) "tmp += encoded")
+                   (indent-line (+ indent 2) "buf += astrsize.to_bytes(4, 'big')")
+                   (indent-line (+ indent 2) "buf += tmp")))
+                 (else
+                  (string-append
+                   (indent-line (+ indent 2) "aobjsize: int = 4")
+                   (indent-line (+ indent 2) "tmp: bytes = len(" accessor ").to_bytes(4, 'big')")
+                   (indent-line (+ indent 2) "for o in " accessor ":")
+                   (indent-line (+ indent 4) "obj: bytes = " (>python-token (symbol->string base-type)) ".encode(o)")
+                   (indent-line (+ indent 4) "objsize += len(obj)")
+                   (indent-line (+ indent 4) "aobjsize += objsize + 4")
+                   (indent-line (+ indent 4) "tmp += objsize.to_bytes(4, 'big')")
+                   (indent-line (+ indent 4) "tmp += obj")
+                   (indent-line (+ indent 2) "buf += aobjsize.to_bytes(4, 'big')")
+                   (indent-line (+ indent 2) "buf += tmp")))))
+             (case type
+               ((byte)
+                (string-append
+                 (indent-line (+ indent 2) "buf += b'\\x00\\x00\\x00\\x01'")
+                 (indent-line (+ indent 2) "buf += " accessor ".to_bytes(1, 'big')")))
+               ((short)
+                (string-append
+                 (indent-line (+ indent 2) "buf += b'\\x00\\x00\\x00\\x02'")
+                 (indent-line (+ indent 2) "buf += " accessor ".to_bytes(2, 'big')")))
+               ((int)
+                (string-append
+                 (indent-line (+ indent 2) "buf += b'\\x00\\x00\\x00\\x04'")
+                 (indent-line (+ indent 2) "buf += " accessor ".to_bytes(4, 'big')")))
+               ((long)
+                (string-append
+                 (indent-line (+ indent 2) "buf += b'\\x00\\x00\\x00\\x08'")
+                 (indent-line (+ indent 2) "buf += " accessor ".to_bytes(8, 'big')")))
+               ((string)
+                (string-append
+                 (indent-line (+ indent 2) accessor "_encoded: bytes = " accessor ".encode(\"utf-8\")")
+                 (indent-line (+ indent 2) "slen: int = len(" accessor "_encoded)")
+                 (indent-line (+ indent 2) "buf += slen.to_bytes(4, 'big')")
+                 (indent-line (+ indent 2) "buf += " accessor "_encoded")))
+               (else
+                (let ((objname (>python-token (symbol->string type))))
+                  (string-append
+                   (indent-line (+ indent 2) "objbuf: bytes = " objname ".encode(" accessor ")")
+                   (indent-line (+ indent 2) "buf += len(objbuf).to_bytes(4, 'big')")
+                   (indent-line (+ indent 2) "buf += objbuf"))))))))))
+
+  (define (generate-python-set-data sname fields)
+    (define (iterator-action sname fields)
+      (let loop ((tmp "")
+                 (first? #t)
+                 (fs fields))
+        (if (null? fs)
+            tmp
+            (let* ((tag (number->string (field-tag (car fs))))
+                   (pre (if first?
+                            (indent-line 4 "if dtag == " tag ":")
+                            (indent-line 4 "elif dtag == " tag ":"))))
+              (loop (string-append tmp pre (generate-python-set-data-action sname (car fs) 4)) #f (cdr fs))))))
+    (let ((vsname (>python-token sname))
+          (tname (>python-object-type sname)))
+      (string-append
+       (indent-line 0 "def __set_data(" vsname ": " tname ", dtags: Sequence[int]) -> bytes:")
+       (indent-line 2 "buf: bytes = b''")
+       (indent-line 2 "for dtag in dtags:")
+       (iterator-action sname fields)
+       (indent-line 4 "else:")
+       (indent-line 6 "pass")
+       (indent-line 2 "return buf"))))
+
+  (define (generate-python-encoder sname fields)
+    (let ((vsname (>python-token sname))
+          (tname (>python-object-type sname)))
+      (string-append
+       (generate-python-set-fields sname fields)
+       (generate-python-set-data sname fields)
+       (indent-line 0 "def encode(" vsname ": " tname ") -> bytes:")
+       (indent-line 2 "(buf0, dtags) = __set_fields(" vsname ")")
+       (indent-line 2 "buf1 = __set_data(" vsname ", dtags)")
+       (indent-line 2 "return buf0 + buf1"))))
+#+end_src
+*** 解碼器
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/python.scm
+  (define (generate-python-parse-fields-action sname field indent)
+    (let ((name (>python-token (field-name field)))
+          (tag (number->string (field-tag field)))
+          (type (field-type field)))
+      (let ((accessor (>python-accessor sname name)))
+        (string-append
+         (indent-line indent "elif tag == " tag ":")
+         (indent-line (+ indent 2) "tag += 1")
+         (indent-line (+ indent 2) accessor " = ((value >> 1) - 1)")))))
+
+  (define (generate-python-parse-fields sname fields)
+    (let ((vsname (>python-token sname))
+          (tname (>python-object-type sname)))
+      (string-append
+       (indent-line 0 "def __parse_fields(buf: bytes, " vsname ": " tname ") -> Tuple[int, Sequence[int]]:")
+       (indent-line 2 "dtags: Sequence[int] = []")
+       (indent-line 2 "offset: int = 0")
+       (indent-line 2 "tag: int = 0")
+       (indent-line 2 "count: int = int.from_bytes(buf[offset: offset + 2], 'big')")
+       (indent-line 2 "offset += 2")
+       (indent-line 2 "if count == 0:")
+       (indent-line 4 "return (0, None)")
+       (indent-line 2 "for i in range(count):")
+       (indent-line 4 "value: int = int.from_bytes(buf[offset: offset + 2], 'big')")
+       (indent-line 4 "offset += 2")
+       (indent-line 4 "if (value & 0x01) == 1:")
+       (indent-line 6 "tag += (value - 1) >> 1")
+       (indent-line 4 "elif value == 0:")
+       (indent-line 6 "dtags.append(tag)")
+       (indent-line 6 "tag += 1")
+       (strcat (map (lambda (x) (generate-python-parse-fields-action sname x 4)) (filter (lambda (y) (primitive-type? (field-type y))) fields)))
+       (indent-line 4 "else:")
+       (indent-line 6 "tag += 1")
+       (indent-line 2 "return (offset, dtags)"))))
+
+  (define (generate-python-parse-data-action sname field indent)
+    (let ((name (field-name field))
+          (tag (number->string (field-tag field)))
+          (type (field-type field)))
+      (let ((accessor (>python-accessor sname name)))
+        (string-append
+         (if (array-type? type)
+             (let ((base-type (array-base-type type)))
+               (case base-type
+                 ((byte)
+                  (string-append
+                   (indent-line (+ indent 2) "size = int.from_bytes(buf[offset : offset + 4], 'big')")
+                   (indent-line (+ indent 2) "offset += 4")
+                   (indent-line (+ indent 2) accessor " = buf[offset : offset + size]")
+                   (indent-line (+ indent 2) "offset += size")))
+                 ((short)
+                  (string-append
+                   (indent-line (+ indent 2) "size = int.from_bytes(buf[offset : offset + 4], 'big')")
+                   (indent-line (+ indent 2) "offset += 4")
+                   (indent-line (+ indent 2) accessor " = []")
+                   (indent-line (+ indent 2) "for j in range(size / 2):")
+                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + j * 2: offset + j * 2 + 2], 'big', True))")
+                   (indent-line (+ indent 4) "offset += size")))
+                 ((int)
+                  (string-append
+                   (indent-line (+ indent 2) "size = int.from_bytes(buf[offset : offset + 4], 'big')")
+                   (indent-line (+ indent 2) "offset += 4")
+                   (indent-line (+ indent 2) accessor " = []")
+                   (indent-line (+ indent 2) "for j in range(size / 4):")
+                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + j * 4: offset + j * 4 + 4], 'big', True))")
+                   (indent-line (+ indent 2) "offset += size")))
+                 ((long)
+                  (string-append
+                   (indent-line (+ indent 2) "size = int.from_bytes(buf[offset : offset + 4], 'big')")
+                   (indent-line (+ indent 2) "offset += 4")
+                   (indent-line (+ indent 2) accessor " = []")
+                   (indent-line (+ indent 2) "for j in range(size / 8):")
+                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + j * 8: offset + j * 8 + 8], 'big', True))")
+                   (indent-line (+ indent 2) "offset += size")))
+                 ((string)
+                  (string-append
+                   (indent-line (+ indent 2) "size = int.from_bytes(buf[offset : offset + 4], 'big')")
+                   (indent-line (+ indent 2) "offset += 4")
+                   (indent-line (+ indent 2) "cnt = int.from_bytes(buf[offset : offset + 4], 'big')")
+                   (indent-line (+ indent 2) "offset += 4")
+                   (indent-line (+ indent 2) accessor " = []")
+                   (indent-line (+ indent 2) "for j in range(cnt):")
+                   (indent-line (+ indent 4) "strlen = int.from_bytes(buf[offset : offset + 4], 'big')")
+                   (indent-line (+ indent 4) "offset += 4")
+                   (indent-line (+ indent 4) accessor ".append(buf[offset : offset + strlen].decode('utf-8'))")
+                   (indent-line (+ indent 4) "offset += strlen")))
+                 (else
+                  (string-append
+                   (indent-line (+ indent 2) "size = int.from_bytes(buf[offset : offset + 4], 'big')")
+                   (indent-line (+ indent 2) "offset += 4")
+                   (indent-line (+ indent 2) "cnt = int.from_bytes(buf[offset : offset + 4], 'big')")
+                   (indent-line (+ indent 2) "offset += 4")
+                   (indent-line (+ indent 2) accessor " = []")
+                   (indent-line (+ indent 2) "for j in range(cnt):")
+                   (indent-line (+ indent 4) "objsize = int.from_bytes(buf[offset : offset + 4], 'big')")
+                   (indent-line (+ indent 4) "offset += 4")
+                   (indent-line (+ indent 4) accessor ".append(" (>python-token (symbol->string base-type)) ".decode(buf[offset: objsize]))")
+                   (indent-line (+ indent 4) "offset += objsize")))))
+             (case type
+               ((byte)
+                (string-append
+                 (indent-line (+ indent 2) "offset += 4")
+                 (indent-line (+ indent 2) accessor " = buf[offset]")
+                 (indent-line (+ indent 2) "offset += 1")))
+               ((short)
+                (string-append
+                 (indent-line (+ indent 2) "offset += 4")
+                 (indent-line (+ indent 2) accessor " = int.from_bytes(buf[offset : offset + 2], 'big', True)")
+                 (indent-line (+ indent 2) "offset += 2")))
+               ((int)
+                (string-append
+                 (indent-line (+ indent 2) "offset += 4")
+                 (indent-line (+ indent 2) accessor " = int.from_bytes(buf[offset : offset + 4], 'big', True)")
+                 (indent-line (+ indent 2) "offset += 4")))
+               ((long)
+                (string-append
+                 (indent-line (+ indent 2) "offset += 4")
+                 (indent-line (+ indent 2) accessor " = int.from_bytes(buf[offset : offset + 8], 'big', True)")
+                 (indent-line (+ indent 2) "offset += 8")))
+               ((string)
+                (string-append
+                 (indent-line (+ indent 2) "strlen = int.from_bytes(buf[offset : offset + 4], 'big')")
+                 (indent-line (+ indent 2) "offset += 4")
+                 (indent-line (+ indent 2) accessor " = buf[offset : offset + strlen].decode('utf-8')")
+                 (indent-line (+ indent 2) "offset += strlen")))
+               (else
+                (string-append
+                 (indent-line (+ indent 2) "objsize = int.from_bytes(buf[offset : offset + 4], 'big')")
+                 (indent-line (+ indent 2) "offset += 4")
+                 (indent-line (+ indent 2) accessor " = " (>python-token (symbol->string type)) ".decode(buf[offset: objsize])")
+                 (indent-line (+ indent 2) "offset += objsize")))))))))
+
+  (define (generate-python-parse-data sname fields)
+    (define (iterator-action sname fields)
+      (let loop ((tmp "")
+                 (first? #t)
+                 (fs fields))
+        (if (null? fs)
+            tmp
+            (let* ((tag (number->string (field-tag (car fs))))
+                   (pre (if first?
+                            (indent-line 4 "if dtag == " tag ":")
+                            (indent-line 4 "elif dtag == " tag ":"))))
+              (loop (string-append tmp pre (generate-python-parse-data-action sname (car fs) 4)) #f (cdr fs))))))
+    (let ((vsname (>python-token sname))
+          (tname (>python-object-type sname)))
+      (string-append
+       (indent-line 0 "def __parse_data(buf: bytes, " vsname ": " tname ", dtags: Sequence[int]) -> int:")
+       (indent-line 2 "offset = 0")
+       (indent-line 2 "for dtag in dtags:")
+       (iterator-action sname fields)
+       (indent-line 4 "else:")
+       (indent-line 6 "size = int.from_bytes(buf[offset, 4], 'big', True)")
+       (indent-line 6 "offset += 4")
+       (indent-line 6 "offset += size")
+       (indent-line 2 "return offset"))))
+
+  (define (generate-python-decoder sname fields)
+    (let ((vsname (>python-token sname))
+          (tname (>python-object-type sname)))
+      (string-append
+       (generate-python-parse-fields sname fields)
+       (generate-python-parse-data sname fields)
+       (indent-line 0 "def decode(buf: bytes) -> " tname ":")
+       (indent-line 2 vsname ": " tname " = " tname "()")
+       (indent-line 2 "(offset0, dtags) = __parse_fields(buf, " vsname ")")
+       (indent-line 2 "if offset0 > 0:")
+       (indent-line 4 "__parse_data(buf[offset0:], " vsname ", dtags)")
+       (indent-line 2 "return " vsname))))
+#+end_src
+*** 主體
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/python.scm
+  (define (generate-python-tightrope-runtime path)
+    (let ((src "
+
+  from typing import Tuple
+  def padding(tag: int, nexttag: int, count: int) -> Tuple[int, bytes, int]:
+    if tag == nexttag:
+      return (None, count)
+    else:
+      t: int = (nexttag - tag) * 2 + 1
+      buf = t.to_bytes(2, 'big')
+      count += 1
+      return (buf, count)
+  "))
+      (with-output-to-file
+          (string-append path "tightrope.py")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-python-serial env struct dir)
+    (let ((name (struct-name struct))
+          (fields (struct-fields struct)))
+      (let ((encoder (generate-python-encoder name fields))
+            (decoder (generate-python-decoder name fields)))
+        (with-output-to-file
+            (string-append dir (>python-token name) ".py")
+          (lambda ()
+            (write-string (string-append encoder decoder)))
+          (list 'append)))))
+
+  (define (generate-python-serials env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (generate-python-tightrope-runtime path)
+      (generate-python-zero-pack env dir)
+      (for-each
+       (lambda (entity) (generate-python-serial env entity path))
+       (get-structs env))))
+#+end_src
+** 壓縮與解壓
+Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調用。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/python.scm
+  (define (generate-python-zero-pack-source path)
+    (let ((src "
+  import zeropack_fsm
+
+  class __ZeropackContext:
+    def __init__(self):
+      self.oocnt = 0
+      self.bitmap = None
+      self.bs = None
+      self.buf = None
+
+  class __ZeropackDelegate(zeropack_fsm.Delegate):
+    def __save_oo(self, ctx):
+      if ctx.buf:
+        ctx.buf += b'\\x00' + ctx.oocnt.to_bytes(1, 'big')
+      else:
+        ctx.buf = b'\\x00' + ctx.oocnt.to_bytes(1, 'big')
+      ctx.oocnt = 0
+    def __save_normal(self, ctx):
+      if ctx.buf:
+        ctx.buf += ctx.bitmap.to_bytes(1, 'big') + ctx.bs
+      else:
+        ctx.buf = ctx.bitmap.to_bytes(1, 'big') + ctx.bs
+    def oocnt_plus_1(self, ctx, state = 0, event = 0):
+      ctx.oocnt += 1
+    def save_normal(self, ctx, state = 0, event = 0):
+      self.__save_normal(ctx)
+    def save_oo_comma_oocnt_equals_1(self, ctx, state = 0, event = 0):
+      self.__save_oo(ctx)
+      ctx.oocnt = 1
+    def save_oo_comma_save_normal(self, ctx, state = 0, event = 0):
+      self.__save_oo(ctx)
+      self.__save_normal(ctx)
+    def save_oo(self, ctx, state = 0, event = 0):
+      self.__save_oo(ctx)
+
+  def pack(src: bytes) -> bytes:
+    if len(src) % 8 != 0:
+      tmp = src + b'\\x00' * (8 - len(src) % 8)
+    else:
+      tmp = src
+    ctx = __ZeropackContext()
+    fsm = zeropack_fsm.StateMachine(__ZeropackDelegate())
+    for i in range(len(tmp) >> 3):
+      bitmap = 0
+      j = 0
+      bs = b''
+      for byte in tmp[i << 3: (i + 1) << 3]:
+        if byte != 0:
+          bitmap |= 1 << (8 - j - 1)
+          bs += byte.to_bytes(1, 'big')
+        j += 1
+      if bitmap == 0:
+        if ctx.oocnt == 0xFF:
+          fsm.process(ctx, zeropack_fsm.Event.OO_COMMA_OOCNT_EQUALS_255)
+        else:
+          fsm.process(ctx, zeropack_fsm.Event.OO_COMMA_OOCNT_LESS_THAN_255)
+      else:
+        ctx.bitmap = bitmap
+        ctx.bs = bs
+        fsm.process(ctx, zeropack_fsm.Event.NORMAL)
+    fsm.process(ctx, zeropack_fsm.Event.EOI)
+    if ctx.buf:
+      scale = int(len(tmp) / len(ctx.buf)) + 1 if len(tmp) % len(ctx.buf) else 0
+      return scale.to_bytes(1, 'big') + ctx.buf
+    else:
+      return None
+
+  def unpack(src: bytes) -> bytes:
+    buf = b''
+    i = 1
+    while i < len(src):
+      byte = src[i]
+      if byte == 0:
+        cnt = src[i + 1]
+        buf += b'\\x00' * (cnt << 3)
+        i += 2
+      else:
+        bitmap = byte
+        for j in range(8):
+          if (bitmap & (1 << (8 - j - 1))) != 0:
+            i += 1
+            buf += src[i].to_bytes(1, 'big')
+          else:
+            buf += b'\\x00'
+        i += 1
+    return buf
+  "))
+      (with-output-to-file
+          (string-append path "zeropack.py")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-python-zero-pack env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (generate-python-zero-pack-source path)))
+#+end_src
+
+** 輔助函數
+#+begin_src scheme :noweb-ref utility
+  (define *python-keywords* '("False" "None" "True" "and" "as" "assert" "async" "await" "break" "class" "continue" "def" "del" "elif" "else" "except" "finally" "for" "from" "global" "if" "import" "in" "is" "lambda" "nonlocal" "not" "or" "pass" "raise" "return" "try" "while" "with" "yield"))
+
+  (define (>python-token name)
+    (let loop ((src (map char-downcase (string->list name)))
+               (dst '()))
+      (if (null? src)
+          (let ((result (list->string (reverse dst))))
+            (if (reduce (lambda (acc x) (or acc x)) #f (map (lambda (x) (equal? x result)) *python-keywords*))
+                (begin
+                  (display (strcat (list "\"" name "\" is a keyword of python language")))
+                  (abort))
+                result))
+          (let ((chr (car src))
+                (rest (cdr src)))
+            (if (eq? chr #\-)
+                (loop rest (cons #\_ dst))
+                (loop rest (cons chr dst)))))))
+
+  (define (>python-object-type type)
+    (strcat (map (lambda (x) (string-titlecase x)) (string-split type ".-_"))))
+
+  (define (>python-type type)
+    (case type
+      ((byte short int long) "int")
+      ((string) "str")
+      (else (>python-token (symbol->string type)))))
+
+  (define (>python-accessor object field)
+    (string-append (>python-token object) "." (>python-token field)))
+
+  (define (size-of-primitive-type type)
+    (case type
+      ((byte) 1)
+      ((short) 2)
+      ((int) 4)
+      ((long) 8)
+      (else 0)))
+#+end_src
