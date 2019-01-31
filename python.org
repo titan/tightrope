@@ -65,9 +65,9 @@
                     (lambda (acc x)
                       (if (eq? (field-type x) 'string)
                           (string-append
-                           (if (> (string-length acc) 0) (string-append acc ", None if self.") "None if self.")
+                           (if (> (string-length acc) 0) (string-append acc ", None if not self.") "None if not self.")
                            (>python-token (field-name x))
-                           " else '%s' % self."
+                           " else '\"%s\"' % self."
                            (>python-token (field-name x)))
                           (string-append
                            (if (> (string-length acc) 0) (string-append acc ", self.") "self.")
@@ -117,7 +117,7 @@
               (indent-line (+ indent 6) "buf += tmpbuf")
               (indent-line (+ indent 4) "tag = nexttag + 1")
               (indent-line (+ indent 4) "if " accessor " > 0" (if (eq? type 'byte) ":" (string-append " and " accessor " < 16383:")))
-              (indent-line (+ indent 6) "t: int = (" accessor " + 1) * 2")
+              (indent-line (+ indent 6) "t: int = (" accessor " + 1) << 1")
               (indent-line (+ indent 6) "buf += t.to_bytes(2, 'big')")
               (indent-line (+ indent 4) "else:")
               (indent-line (+ indent 6) "buf += zero.to_bytes(2, 'big')")
@@ -177,19 +177,19 @@
                    (indent-line (+ indent 2) "buf += " accessor)))
                  ((short)
                   (string-append
-                   (indent-line (+ indent 2) "assize: int = len(" accessor ") * 2")
+                   (indent-line (+ indent 2) "assize: int = len(" accessor ") << 1")
                    (indent-line (+ indent 2) "buf += assize.to_bytes(4, 'big')")
                    (indent-line (+ indent 2) "for e in " accessor ":")
                    (indent-line (+ indent 4) "buf += e.to_bytes(2, 'big')")))
                  ((int)
                   (string-append
-                   (indent-line (+ indent 2) "aisize: int = len(" accessor ") * 4")
+                   (indent-line (+ indent 2) "aisize: int = len(" accessor ") << 2")
                    (indent-line (+ indent 2) "buf += aisize.to_bytes(4, 'big')")
                    (indent-line (+ indent 2) "for e in " accessor ":")
                    (indent-line (+ indent 4) "buf += e.to_bytes(4, 'big')")))
                  ((long)
                   (string-append
-                   (indent-line (+ indent 2) "var alsize: int = len(" accessor ") * 8")
+                   (indent-line (+ indent 2) "var alsize: int = len(" accessor ") << 3")
                    (indent-line (+ indent 2) "buf += alsize.to_bytes(8, 'big')")
                    (indent-line (+ indent 2) "for e in " accessor ":")
                    (indent-line (+ indent 4) "buf += e.to_bytes(8, 'big')")))
@@ -338,24 +338,24 @@
                    (indent-line (+ indent 2) "size = int.from_bytes(buf[offset : offset + 4], 'big')")
                    (indent-line (+ indent 2) "offset += 4")
                    (indent-line (+ indent 2) accessor " = []")
-                   (indent-line (+ indent 2) "for j in range(size / 2):")
-                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + j * 2: offset + j * 2 + 2], 'big', True))")
+                   (indent-line (+ indent 2) "for j in range(size >> 1):")
+                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + (j << 1): offset + ((j + 1) << 1)], 'big', True))")
                    (indent-line (+ indent 4) "offset += size")))
                  ((int)
                   (string-append
                    (indent-line (+ indent 2) "size = int.from_bytes(buf[offset : offset + 4], 'big')")
                    (indent-line (+ indent 2) "offset += 4")
                    (indent-line (+ indent 2) accessor " = []")
-                   (indent-line (+ indent 2) "for j in range(size / 4):")
-                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + j * 4: offset + j * 4 + 4], 'big', True))")
+                   (indent-line (+ indent 2) "for j in range(size >> 2):")
+                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + (j << 2): offset + ((j + 1) << 2)], 'big', True))")
                    (indent-line (+ indent 2) "offset += size")))
                  ((long)
                   (string-append
                    (indent-line (+ indent 2) "size = int.from_bytes(buf[offset : offset + 4], 'big')")
                    (indent-line (+ indent 2) "offset += 4")
                    (indent-line (+ indent 2) accessor " = []")
-                   (indent-line (+ indent 2) "for j in range(size / 8):")
-                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + j * 8: offset + j * 8 + 8], 'big', True))")
+                   (indent-line (+ indent 2) "for j in range(size >> 3):")
+                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + (j << 3): offset + ((j + 1) << 3)], 'big', True))")
                    (indent-line (+ indent 2) "offset += size")))
                  ((string)
                   (string-append
@@ -463,7 +463,7 @@
     if tag == nexttag:
       return (None, count)
     else:
-      t: int = (nexttag - tag) * 2 + 1
+      t: int = ((nexttag - tag) << 1) + 1
       buf = t.to_bytes(2, 'big')
       count += 1
       return (buf, count)
@@ -506,6 +506,8 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
   class __ZeropackContext:
     def __init__(self):
       self.oocnt = 0
+      self.ffcnt = 0
+      self.ffbuf = None
       self.bitmap = None
       self.bs = None
       self.buf = None
@@ -517,23 +519,59 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
       else:
         ctx.buf = b'\\x00' + ctx.oocnt.to_bytes(1, 'big')
       ctx.oocnt = 0
+    def __save_ff(self, ctx):
+      if ctx.buf:
+        ctx.buf += b'\\xff' + ctx.ffcnt.to_bytes(1, 'big') + ctx.ffbuf
+      else:
+        ctx.buf = b'\\xff' + ctx.ffcnt.to_bytes(1, 'big') + ctx.ffbuf
+      ctx.ffcnt = 0
+      ctx.ffbuf = None
+    def __add_ff(self, ctx):
+      if ctx.ffbuf:
+        ctx.ffbuf += ctx.bs
+      else:
+        ctx.ffbuf = ctx.bs
     def __save_normal(self, ctx):
       if ctx.buf:
         ctx.buf += ctx.bitmap.to_bytes(1, 'big') + ctx.bs
       else:
         ctx.buf = ctx.bitmap.to_bytes(1, 'big') + ctx.bs
-    def oocnt_plus_1(self, ctx, state = 0, event = 0):
-      ctx.oocnt += 1
+    def oocnt_equals_1(self, ctx, state = 0, event = 0):
+      ctx.oocnt = 1
+    def add_ff_comma_ffcnt_equals_1(self, ctx, state = 0, event = 0):
+      self.__add_ff(ctx)
+      ctx.ffcnt = 1
     def save_normal(self, ctx, state = 0, event = 0):
       self.__save_normal(ctx)
+    def oocnt_plus_1(self, ctx, state = 0, event = 0):
+      ctx.oocnt += 1
     def save_oo_comma_oocnt_equals_1(self, ctx, state = 0, event = 0):
       self.__save_oo(ctx)
       ctx.oocnt = 1
+    def save_oo_comma_add_ff_comma_ffcnt_equals_1(self, ctx, state = 0, event = 0):
+      self.__save_oo(ctx)
+      self.__add_ff(ctx)
+      ctx.ffcnt = 1
     def save_oo_comma_save_normal(self, ctx, state = 0, event = 0):
       self.__save_oo(ctx)
       self.__save_normal(ctx)
     def save_oo(self, ctx, state = 0, event = 0):
       self.__save_oo(ctx)
+    def save_ff_comma_oocnt_equals_1(self, ctx, state = 0, event = 0):
+      self.__save_ff(ctx)
+      ctx.oocnt = 1
+    def add_ff_comma_ffcnt_plus_1(self, ctx, state = 0, event = 0):
+      self.__add_ff(ctx)
+      ctx.ffcnt += 1
+    def save_ff_comma_add_ff_comma_ffcnt_equals_1(self, ctx, state = 0, event = 0):
+      self.__save_ff(ctx)
+      self.__add_ff(ctx)
+      ctx.ffcnt = 1
+    def save_ff_comma_save_normal(self, ctx, state = 0, event = 0):
+      self.__save_ff(ctx)
+      self.__save_normal(ctx)
+    def save_ff(self, ctx, state = 0, event = 0):
+      self.__save_ff(ctx)
 
   def pack(src: bytes) -> bytes:
     if len(src) % 8 != 0:
@@ -556,6 +594,12 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
           fsm.process(ctx, zeropack_fsm.Event.OO_COMMA_OOCNT_EQUALS_255)
         else:
           fsm.process(ctx, zeropack_fsm.Event.OO_COMMA_OOCNT_LESS_THAN_255)
+      elif bitmap == 0xFF:
+        ctx.bs = bs
+        if ctx.ffcnt == 0xFF:
+          fsm.process(ctx, zeropack_fsm.Event.FF_COMMA_FFCNT_EQUALS_255)
+        else:
+          fsm.process(ctx, zeropack_fsm.Event.FF_COMMA_FFCNT_LESS_THAN_255)
       else:
         ctx.bitmap = bitmap
         ctx.bs = bs
@@ -576,6 +620,12 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
         cnt = src[i + 1]
         buf += b'\\x00' * (cnt << 3)
         i += 2
+      if byte == 0xFF:
+        cnt = src[i + 1]
+        i += 2
+        for j in range(cnt):
+          buf += src[i + (j << 3): i + ((j + 1) << 3)]
+        i += (cnt << 3)
       else:
         bitmap = byte
         for j in range(8):
