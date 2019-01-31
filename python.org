@@ -192,7 +192,7 @@
                  ((long)
                   (string-append
                    (indent-line (+ indent 2) "alsize: int = len(" accessor ") << 3")
-                   (indent-line (+ indent 2) "buf += alsize.to_bytes(8, 'big')")
+                   (indent-line (+ indent 2) "buf += alsize.to_bytes(4, 'big')")
                    (indent-line (+ indent 2) "for e in " accessor ":")
                    (indent-line (+ indent 4) "buf += e.to_bytes(8, 'big')")))
                  ((string)
