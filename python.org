@@ -13,7 +13,9 @@
     (let ((name (>python-token (field-name field)))
           (type (field-type field)))
       (if (array-type? type)
-          (string-append name ": Sequence[" (>python-type type)"] = []")
+          (if (eq? (array-base-type type) 'byte)
+              (string-append name ": bytes = b''")
+              (string-append name ": Sequence[" (>python-type (array-base-type type))"] = []"))
           (string-append name ": " (>python-type type) " = "
                          (if (custom-type? type)
                              "None"
@@ -189,7 +191,7 @@
                    (indent-line (+ indent 4) "buf += e.to_bytes(4, 'big')")))
                  ((long)
                   (string-append
-                   (indent-line (+ indent 2) "var alsize: int = len(" accessor ") << 3")
+                   (indent-line (+ indent 2) "alsize: int = len(" accessor ") << 3")
                    (indent-line (+ indent 2) "buf += alsize.to_bytes(8, 'big')")
                    (indent-line (+ indent 2) "for e in " accessor ":")
                    (indent-line (+ indent 4) "buf += e.to_bytes(8, 'big')")))
