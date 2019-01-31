@@ -341,15 +341,15 @@
                    (indent-line (+ indent 2) "offset += 4")
                    (indent-line (+ indent 2) accessor " = []")
                    (indent-line (+ indent 2) "for j in range(size >> 1):")
-                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + (j << 1): offset + ((j + 1) << 1)], 'big', True))")
-                   (indent-line (+ indent 4) "offset += size")))
+                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + (j << 1): offset + ((j + 1) << 1)], 'big', signed=True))")
+                   (indent-line (+ indent 2) "offset += size")))
                  ((int)
                   (string-append
                    (indent-line (+ indent 2) "size = int.from_bytes(buf[offset : offset + 4], 'big')")
                    (indent-line (+ indent 2) "offset += 4")
                    (indent-line (+ indent 2) accessor " = []")
                    (indent-line (+ indent 2) "for j in range(size >> 2):")
-                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + (j << 2): offset + ((j + 1) << 2)], 'big', True))")
+                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + (j << 2): offset + ((j + 1) << 2)], 'big', signed=True))")
                    (indent-line (+ indent 2) "offset += size")))
                  ((long)
                   (string-append
@@ -357,7 +357,7 @@
                    (indent-line (+ indent 2) "offset += 4")
                    (indent-line (+ indent 2) accessor " = []")
                    (indent-line (+ indent 2) "for j in range(size >> 3):")
-                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + (j << 3): offset + ((j + 1) << 3)], 'big', True))")
+                   (indent-line (+ indent 4) accessor ".append(int.from_bytes(buf[offset + (j << 3): offset + ((j + 1) << 3)], 'big', signed=True))")
                    (indent-line (+ indent 2) "offset += size")))
                  ((string)
                   (string-append
@@ -381,7 +381,7 @@
                    (indent-line (+ indent 2) "for j in range(cnt):")
                    (indent-line (+ indent 4) "objsize = int.from_bytes(buf[offset : offset + 4], 'big')")
                    (indent-line (+ indent 4) "offset += 4")
-                   (indent-line (+ indent 4) accessor ".append(" (>python-token (symbol->string base-type)) ".decode(buf[offset: objsize]))")
+                   (indent-line (+ indent 4) accessor ".append(" (>python-token (symbol->string base-type)) ".decode(buf[offset : offset + objsize]))")
                    (indent-line (+ indent 4) "offset += objsize")))))
              (case type
                ((byte)
@@ -392,17 +392,17 @@
                ((short)
                 (string-append
                  (indent-line (+ indent 2) "offset += 4")
-                 (indent-line (+ indent 2) accessor " = int.from_bytes(buf[offset : offset + 2], 'big', True)")
+                 (indent-line (+ indent 2) accessor " = int.from_bytes(buf[offset : offset + 2], 'big', signed=True)")
                  (indent-line (+ indent 2) "offset += 2")))
                ((int)
                 (string-append
                  (indent-line (+ indent 2) "offset += 4")
-                 (indent-line (+ indent 2) accessor " = int.from_bytes(buf[offset : offset + 4], 'big', True)")
+                 (indent-line (+ indent 2) accessor " = int.from_bytes(buf[offset : offset + 4], 'big', signed=True)")
                  (indent-line (+ indent 2) "offset += 4")))
                ((long)
                 (string-append
                  (indent-line (+ indent 2) "offset += 4")
-                 (indent-line (+ indent 2) accessor " = int.from_bytes(buf[offset : offset + 8], 'big', True)")
+                 (indent-line (+ indent 2) accessor " = int.from_bytes(buf[offset : offset + 8], 'big', signed=True)")
                  (indent-line (+ indent 2) "offset += 8")))
                ((string)
                 (string-append
@@ -414,7 +414,7 @@
                 (string-append
                  (indent-line (+ indent 2) "objsize = int.from_bytes(buf[offset : offset + 4], 'big')")
                  (indent-line (+ indent 2) "offset += 4")
-                 (indent-line (+ indent 2) accessor " = " (>python-token (symbol->string type)) ".decode(buf[offset: objsize])")
+                 (indent-line (+ indent 2) accessor " = " (>python-token (symbol->string type)) ".decode(buf[offset : offset + objsize])")
                  (indent-line (+ indent 2) "offset += objsize")))))))))
 
   (define (generate-python-parse-data sname fields)
@@ -437,7 +437,7 @@
        (indent-line 2 "for dtag in dtags:")
        (iterator-action sname fields)
        (indent-line 4 "else:")
-       (indent-line 6 "size = int.from_bytes(buf[offset, 4], 'big', True)")
+       (indent-line 6 "size = int.from_bytes(buf[offset, 4], 'big', signed=True)")
        (indent-line 6 "offset += 4")
        (indent-line 6 "offset += size")
        (indent-line 2 "return offset"))))
