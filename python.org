@@ -645,11 +645,91 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
           (write-string src))
         (list 'replace))))
 
+
+  (define (generate-python-zero-pack-fsm-source path)
+    (let ((src "
+  from abc import ABC, abstractmethod
+
+  class State:
+      READY = 0
+      OO = 1
+      FF = 2
+      NORMAL = 3
+
+  class Event:
+      OO_COMMA_OOCNT_LESS_THAN_255 = 0
+      OO_COMMA_OOCNT_EQUALS_255 = 1
+      FF_COMMA_FFCNT_LESS_THAN_255 = 2
+      FF_COMMA_FFCNT_EQUALS_255 = 3
+      NORMAL = 4
+      EOI = 5
+
+  class Delegate(ABC):
+      @abstractmethod
+      def oocnt_equals_1(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def add_ff_comma_ffcnt_equals_1(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def save_normal(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def oocnt_plus_1(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def save_oo_comma_oocnt_equals_1(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def save_oo_comma_add_ff_comma_ffcnt_equals_1(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def save_oo_comma_save_normal(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def save_oo(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def save_ff_comma_oocnt_equals_1(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def add_ff_comma_ffcnt_plus_1(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def save_ff_comma_add_ff_comma_ffcnt_equals_1(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def save_ff_comma_save_normal(self, ctx, state = 0, event = 0):
+          return NotImplemented
+      @abstractmethod
+      def save_ff(self, ctx, state = 0, event = 0):
+          return NotImplemented
+
+  transform_states = [[State.OO, State.READY, State.FF, State.READY, State.NORMAL, State.READY], [State.OO, State.OO, State.FF, State.OO, State.NORMAL, State.OO], [State.OO, State.FF, State.FF, State.FF, State.NORMAL, State.FF], [State.OO, State.NORMAL, State.FF, State.NORMAL, State.NORMAL, State.NORMAL]]
+
+  class StateMachine:
+      def __init__(self, delegate):
+          self.state = State.READY
+          self.delegate = delegate
+          self.transform_actions = [[self.delegate.oocnt_equals_1, None, self.delegate.add_ff_comma_ffcnt_equals_1, None, self.delegate.save_normal, None], [self.delegate.oocnt_plus_1, self.delegate.save_oo_comma_oocnt_equals_1, self.delegate.save_oo_comma_add_ff_comma_ffcnt_equals_1, None, self.delegate.save_oo_comma_save_normal, self.delegate.save_oo], [self.delegate.save_ff_comma_oocnt_equals_1, None, self.delegate.add_ff_comma_ffcnt_plus_1, self.delegate.save_ff_comma_add_ff_comma_ffcnt_equals_1, self.delegate.save_ff_comma_save_normal, self.delegate.save_ff], [self.delegate.oocnt_equals_1, None, self.delegate.add_ff_comma_ffcnt_equals_1, None, self.delegate.save_normal, None]]
+      def process(self, ctx, event):
+          global transform_states
+          if self.transform_actions[self.state][event]:
+              self.transform_actions[self.state][event](ctx, self.state, event)
+          self.state = transform_states[self.state][event]
+  "))
+      (with-output-to-file
+          (string-append path "zeropack_fsm.py")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
   (define (generate-python-zero-pack env dir)
     (let ((path dir))
       (if (and (> (string-length path) 0) (not (file-exists? path)))
           (mkdir-p path))
-      (generate-python-zero-pack-source path)))
+      (generate-python-zero-pack-source path)
+      (generate-python-zero-pack-fsm-source path)))
 #+end_src
 
 ** 輔助函數
