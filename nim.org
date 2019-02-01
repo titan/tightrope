@@ -25,6 +25,13 @@
                                (strcat (list "ref " (>nim-token typestr) "." (>nim-object-type typestr))))
                              (>nim-type type))))))
 
+  (define (generate-nim-field-dollar field)
+    (let ((name (>nim-token (field-name field)))
+          (type (field-type field)))
+      (if (eq? type 'string)
+          (string-append "\"\\\"" name "\\\": \\\"\" & x." name " & \"\\\"\"")
+          (string-append "\"\\\"" name "\\\": \" & $x." name))))
+
   (define (generate-nim-entity struct dir)
     (let ((sname (>nim-token (struct-name struct)))
           (fields (struct-fields struct)))
@@ -39,7 +46,24 @@
                                          (if (custom-type? type)
                                              (cons (generate-nim-import type) acc)
                                              acc)))
-                                     '() fields)))))
+                                     '() fields))))
+            (dollar
+             (string-append
+              (indent-line 0 "proc `$`*(x: ref " (>nim-object-type sname) "): string =")
+              (indent-line
+               2
+               "return \"{\" & "
+               (reduce
+                (lambda (acc x)
+                  (if (= (string-length acc) 0)
+                      x
+                      (string-append acc " & \", \" & " x )))
+                ""
+                (map
+                 (lambda (x)
+                   (generate-nim-field-dollar x))
+                 fields))
+               " & \"}\""))))
         (let ((content
                (string-append
                 "import tightrope\n"
@@ -47,7 +71,8 @@
                 imports
                 (indent-line 0 "type")
                 (indent-line 2 tname "* = object of RootObj")
-                field-decls)))
+                field-decls
+                dollar)))
           (with-output-to-file
               (string-append dir sname ".nim")
             (lambda ()
@@ -76,13 +101,13 @@
               (cond
                ((primitive-type? base-type)
                 (string-append
-                 (indent-line indent "if " accessor " != nil:")
+                 (indent-line indent "if len(" accessor ") > 0:")
                  (indent-line (+ indent 2) "tags[len] = " tag)
                  (indent-line (+ indent 2) "len += 1")
                  (indent-line (+ indent 2) "size += 2 + 4 + len(" accessor ") * sizeof(" (>nim-type base-type) ")")))
                ((eq? base-type 'string)
                 (string-append
-                 (indent-line indent "if " accessor " != nil:")
+                 (indent-line indent "if len(" accessor ") > 0:")
                  (indent-line (+ indent 2) "tags[len] = " tag)
                  (indent-line (+ indent 2) "len += 1")
                  (indent-line (+ indent 2) "size += 2 + 4 + 4")
@@ -90,7 +115,7 @@
                  (indent-line (+ indent 4) "size += 4 + len(" accessor "[i])")))
                (else
                 (string-append
-                 (indent-line indent "if " accessor " != nil:")
+                 (indent-line indent "if len(" accessor ") > 0:")
                  (indent-line (+ indent 2) "tags[len] = " tag)
                  (indent-line (+ indent 2) "len += 1")
                  (indent-line (+ indent 2) "size += 2 + 4 + 4")
@@ -109,7 +134,7 @@
                 (indent-line (+ indent 4) "size += 2 + 4 + sizeof(" (>nim-type type) ")"))))
              ((eq? type 'string)
               (string-append
-               (indent-line indent "if " accessor " != nil:")
+               (indent-line indent "if " accessor " != \"\":")
                (indent-line (+ indent 2) "tags[len] = " tag)
                (indent-line (+ indent 2) "len += 1")
                (indent-line (+ indent 2) "size += 2 + 4 + len(" accessor ")")))
@@ -147,33 +172,44 @@
       (let ((accessor (>nim-accessor sname name)))
         (string-append
          (indent-line indent "of " tag ":")
-         (if (primitive-type? type)
-             (string-append
-              (indent-line (+ indent 2) "if " accessor " != 0:")
-              (indent-line (+ indent 4) "count += 1")
-              (indent-line (+ indent 4) "bptr += tightrope.padding(tag, nexttag, buf, bptr, count)")
-              (indent-line (+ indent 4) "tag = nexttag + 1")
-              (indent-line (+ indent 4) "if " accessor " > 0" (if (eq? type 'byte) ":" (string-append " and " accessor " < 16383:")))
-              (case type
-                ((int long)
-                 (indent-line (+ indent 6) "let t: int16 = cast[int16]((" accessor " + 1) * 2)"))
-                ((byte)
-                 (indent-line (+ indent 6) "let t: int16 = (cast[int16](" accessor ") + 1) * 2"))
-                (else
-                 (indent-line (+ indent 6) "let t: int16 = (" accessor " + 1) * 2")))
-              (indent-line (+ indent 6) "assign_short(buf, bptr, t)")
-              (indent-line (+ indent 4) "else:")
-              (indent-line (+ indent 6) "assign_short_0(buf, bptr)")
-              (indent-line (+ indent 6) "dtags[dlen] = " tag)
-              (indent-line (+ indent 6) "dlen += 1"))
-             (string-append
-              (indent-line (+ indent 2) "if " accessor " != nil:")
-              (indent-line (+ indent 4) "dtags[dlen] = " tag)
-              (indent-line (+ indent 4) "dlen += 1")
-              (indent-line (+ indent 4) "count += 1")
-              (indent-line (+ indent 4) "bptr += tightrope.padding(tag, nexttag, buf, bptr, count)")
-              (indent-line (+ indent 4) "tag = nexttag + 1")
-              (indent-line (+ indent 4) "assign_short_0(buf, bptr)")))))))
+         (cond
+          ((primitive-type? type)
+           (string-append
+            (indent-line (+ indent 2) "if " accessor " != 0:")
+            (indent-line (+ indent 4) "count += 1")
+            (indent-line (+ indent 4) "bptr += tightrope.padding(tag, nexttag, buf, bptr, count)")
+            (indent-line (+ indent 4) "tag = nexttag + 1")
+            (indent-line (+ indent 4) "if " accessor " > 0" (if (eq? type 'byte) ":" (string-append " and " accessor " < 16383:")))
+            (case type
+              ((int long)
+               (indent-line (+ indent 6) "let t: int16 = cast[int16]((" accessor " + 1) * 2)"))
+              ((byte)
+               (indent-line (+ indent 6) "let t: int16 = (cast[int16](" accessor ") + 1) * 2"))
+              (else
+               (indent-line (+ indent 6) "let t: int16 = (" accessor " + 1) * 2")))
+            (indent-line (+ indent 6) "assign_short(buf, bptr, t)")
+            (indent-line (+ indent 4) "else:")
+            (indent-line (+ indent 6) "assign_short_0(buf, bptr)")
+            (indent-line (+ indent 6) "dtags[dlen] = " tag)
+            (indent-line (+ indent 6) "dlen += 1")))
+          ((custom-type? type)
+           (string-append
+            (indent-line (+ indent 2) "if " accessor " != nil:")
+            (indent-line (+ indent 4) "dtags[dlen] = " tag)
+            (indent-line (+ indent 4) "dlen += 1")
+            (indent-line (+ indent 4) "count += 1")
+            (indent-line (+ indent 4) "bptr += tightrope.padding(tag, nexttag, buf, bptr, count)")
+            (indent-line (+ indent 4) "tag = nexttag + 1")
+            (indent-line (+ indent 4) "assign_short_0(buf, bptr)")))
+          (else
+           (string-append
+            (indent-line (+ indent 2) "if len(" accessor ") > 0:")
+            (indent-line (+ indent 4) "dtags[dlen] = " tag)
+            (indent-line (+ indent 4) "dlen += 1")
+            (indent-line (+ indent 4) "count += 1")
+            (indent-line (+ indent 4) "bptr += tightrope.padding(tag, nexttag, buf, bptr, count)")
+            (indent-line (+ indent 4) "tag = nexttag + 1")
+            (indent-line (+ indent 4) "assign_short_0(buf, bptr)"))))))))
 
   (define (generate-nim-set-fields sname fields)
     (let ((vsname (>nim-token sname))
@@ -343,7 +379,7 @@
       (string-append
        (generate-nim-set-fields sname fields)
        (generate-nim-set-data sname fields)
-       (indent-line 0 "proc encode_into*(" vsname ": ref " tname ", buf:var seq[byte], start: int): int = ")
+       (indent-line 0 "proc encode_into*(" vsname ": ref " tname ", buf:var seq[byte], start: int): int =")
        (indent-line 2 "var")
        (indent-line 4 "dtags: array[0.." (number->string (- (length fields) 1)) ", int]")
        (indent-line 4 "dlen: int = 0")
@@ -481,7 +517,7 @@
                  (indent-line (+ indent 2) "bptr += 4")
                  (indent-line (+ indent 2) accessor " = newString(strlen)")
                  (indent-line (+ indent 2) "for j in 0..(strlen - 1):")
-                 (indent-line (+ indent 4) accessor "[i] = cast[char](buf[bptr + j])")
+                 (indent-line (+ indent 4) accessor "[j] = cast[char](buf[bptr + j])")
                  (indent-line (+ indent 2) "bptr += strlen")))
                (else
                 (string-append
@@ -636,7 +672,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     State = enum
       NORMAL, OO, FF
 
-  proc zeropack*(src: seq[byte]): seq[byte] =
+  proc pack*(src: seq[byte]): seq[byte] =
     var
       dst: seq[byte] = newSeq[byte](len(src) + 1)
       ffcnt: byte = 0
@@ -731,7 +767,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     delete(dst, dptr + 1, len(dst))
     return dst
 
-  proc unzeropack*(src: seq[byte], start: int, slen: int): seq[byte] =
+  proc unpack*(src: seq[byte], start: int, slen: int): seq[byte] =
     var
       dst: seq[byte] = newSeq[byte](slen * cast[int](src[start]))
       sptr: int = start + 1
@@ -768,7 +804,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
       delete(dst, dptr + 1, len(dst))
     return dst
 
-  proc unzeropack*(src: seq[byte]): seq[byte] = unzeropack(src, 0, len(src))
+  proc unpack*(src: seq[byte]): seq[byte] = unpack(src, 0, len(src))
   "))
       (with-output-to-file
           (string-append path "zeropack.nim")
