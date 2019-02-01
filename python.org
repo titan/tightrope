@@ -622,7 +622,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
         cnt = src[i + 1]
         buf += b'\\x00' * (cnt << 3)
         i += 2
-      if byte == 0xFF:
+      elif byte == 0xFF:
         cnt = src[i + 1]
         i += 2
         for j in range(cnt):
