@@ -1,0 +1,932 @@
+* dart 後端實現
+
+** 實體對象
+在 Tightrope dart 實現中，用 class 來實現數據結構，實體對象的名稱遵循 dart 語言的命名規則。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/dart.scm
+  <<utility>>
+
+  (define (generate-dart-import type)
+    (let ((dart-type (>dart-token (symbol->string type))))
+      (string-append "import '" dart-type ".dart' as " dart-type ";\n")))
+
+  (define (generate-dart-field-declare field)
+    (let ((name (>dart-token (field-name field)))
+          (type (field-type field)))
+      (if (array-type? type)
+          (let ((base-type (array-base-type type)))
+            (if (custom-type? base-type)
+                (string-append "List<" (>dart-library-type base-type) "." (>dart-type base-type) "> " name " = null;")
+                (string-append "List<" (>dart-type base-type) "> " name " = null;")))
+          (if (custom-type? type)
+              (string-append (>dart-library-type type) "." (>dart-type type) " " name " = null;")
+              (string-append (>dart-type type) " " name " = "
+                         (if (custom-type? type)
+                             "null;"
+                             (if (eq? 'string type)
+                                 "null;"
+                                 "0;")))))))
+
+  (define (generate-dart-entity-to-string field head?)
+    (let ((name (>dart-token (field-name field)))
+          (type (field-type field)))
+      (if (array-type? type)
+          (let ((base-type (array-base-type type)))
+            (if (eq? base-type 'string)
+                (indent-line 4 "builder.write(\"" (if head? "" ", ") "'" name "': ['${" name ".join(\"', '\")}']\");")
+                (indent-line 4 "builder.write(\"" (if head? "" ", ") "'" name "': $" name "\");")))
+          (if (eq? type 'string)
+            (string-append
+              (indent-line 4 "builder.write(\"" (if head? "" ", ") "'" name "': \");")
+              (indent-line 4 "builder.write(" name " != null ? \"'\" + " name " + \"'\" : null);"))
+            (indent-line 4 "builder.write(\"" (if head? "" ", ") "'" name "': $" name "\");")))))
+
+  (define (generate-dart-entity struct dir)
+    (let ((sname (>dart-token (struct-name struct)))
+          (fields (struct-fields struct)))
+      (let ((tname (>dart-object-type sname))
+            (field-decls (strcat (map (lambda (x) (indent-line 2 (generate-dart-field-declare x))) fields)))
+            (imports (strcat (unique (reduce (lambda (acc field)
+                                               (let ((type
+                                                      (if (array-type? (field-type field))
+                                                          (array-base-type (field-type field))
+                                                          (field-type field))))
+                                                 (if (custom-type? type)
+                                                     (cons (generate-dart-import type) acc)
+                                                     acc)))
+                                             '() fields))))
+            (to-string
+             (string-append
+              (indent-line 2 "String toString() {")
+              (indent-line 4 "StringBuffer builder = StringBuffer();")
+              (reduce
+                (lambda (acc x)
+                  (if (= (string-length acc) 0)
+                      (generate-dart-entity-to-string x #t)
+                      (string-append acc (generate-dart-entity-to-string x #f))))
+                ""
+                fields)
+              (indent-line 4 "return '{$builder}';")
+              (indent-line 2 "}")
+              )))
+        (let ((content
+               (string-append
+                "import 'dart:typed_data';\n"
+                "import 'dart:convert';\n"
+                "import 'tightrope.dart' as tightrope;\n"
+                imports
+                (indent-line 0 "class " tname " {")
+                field-decls
+                to-string
+                (indent-line 0 "}"))))
+          (with-output-to-file
+              (string-append dir sname ".dart")
+            (lambda ()
+              (write-string content))
+            (list 'replace))))))
+
+  (define (generate-dart-entities env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (for-each
+       (lambda (entity) (generate-dart-entity entity path))
+       (get-structs env))))
+#+end_src
+
+** 序列化與反序列化
+*** 計算編碼大小
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/dart.scm
+  (define (generate-dart-calculate-size-recursive sname field indent)
+    (let ((type (field-type field))
+          (name (>dart-token (field-name field)))
+          (tag (number->string (field-tag field))))
+      (let ((accessor (>dart-accessor sname name)))
+        (if (array-type? type)
+            (let ((base-type (array-base-type type)))
+              (cond
+               ((primitive-type? base-type)
+                (string-append
+                 (indent-line indent "if (" accessor " != null) {")
+                 (indent-line (+ indent 2) "tags[len] = " tag ";")
+                 (indent-line (+ indent 2) "len += 1;")
+                 (indent-line (+ indent 2) "size += 2 + 4 + " accessor ".length * " (number->string (case base-type (byte 1) (short 2) (int 4) (else 8))) ";")
+                 (indent-line indent "}")))
+               ((eq? base-type 'string)
+                (string-append
+                 (indent-line indent "if (" accessor " != null) {")
+                 (indent-line (+ indent 2) "tags[len] = " tag ";")
+                 (indent-line (+ indent 2) "len += 1;")
+                 (indent-line (+ indent 2) "size += 2 + 4 + 4;")
+                 (indent-line (+ indent 2) "for (String str in " accessor ") {")
+                 (indent-line (+ indent 4) "size += 4 + str.length;")
+                 (indent-line (+ indent 2) "}")
+                 (indent-line indent "}")))
+               (else
+                (string-append
+                 (indent-line indent "if (" accessor " != null) {")
+                 (indent-line (+ indent 2) "tags[len] = " tag ";")
+                 (indent-line (+ indent 2) "len += 1;")
+                 (indent-line (+ indent 2) "size += 2 + 4 + 4;")
+                 (indent-line (+ indent 2) "for (" (>dart-type base-type) " " (>dart-token (symbol->string base-type)) " in " accessor ") {")
+                 (indent-line (+ indent 4) "size += 4 + " (>dart-token (symbol->string base-type)) ".calculate_size(" (>dart-token (symbol->string base-type)) ");")
+                 (indent-line (+ indent 2) "}")
+                 (indent-line indent "}")))))
+            (cond
+             ((primitive-type? type)
+              (string-append
+               (indent-line indent "if (" accessor " != 0) {")
+               (string-append
+                (indent-line (+ indent 2) "tags[len] = " tag ";")
+                (indent-line (+ indent 2) "len += 1;")
+                (indent-line (+ indent 2) "if (" accessor " > 0" (if (eq? type 'byte) ") {" (string-append " && " accessor " < 16383) {")))
+                (indent-line (+ indent 4) "size += 2;")
+                (indent-line (+ indent 2) "} else {")
+                (indent-line (+ indent 4) "size += 2 + 4 + " (number->string (case type (byte 1) (short 2) (int 4) (else 8))) ";")
+                (indent-line (+ indent 2) "}")
+                (indent-line indent "}"))))
+             ((eq? type 'string)
+              (string-append
+               (indent-line indent "if (" accessor " != null) {")
+               (indent-line (+ indent 2) "tags[len] = " tag ";")
+               (indent-line (+ indent 2) "len += 1;")
+               (indent-line (+ indent 2) "size += 2 + 4 + " accessor ".length;")
+               (indent-line indent "}")))
+             (else
+              (string-append
+               (indent-line indent "if (" accessor " != null) {")
+               (indent-line (+ indent 2) "tags[len] = " tag ";")
+               (indent-line (+ indent 2) "len += 1;")
+               (indent-line (+ indent 2) "size += 2 + 4 + " (>dart-token (symbol->string type)) ".calculate_size(" accessor ", utf8encoder);")
+               (indent-line indent "}"))))))))
+
+  (define (generate-dart-calculate-size sname fields)
+    (let ((vsname (>dart-token sname))
+          (tname (>dart-object-type sname)))
+      (string-append
+       (indent-line 0 "int calculate_size(" tname " " vsname ", Utf8Encoder utf8encoder) {")
+       (indent-line 2 "int size = 2;")
+       (indent-line 2 "List<int> tags = new List<int>(" (number->string (length fields)) ");")
+       (indent-line 2 "int len = 0;")
+       (strcat (map (lambda (x) (generate-dart-calculate-size-recursive sname x 2)) fields))
+       (indent-line 2 "if (len > 0) {")
+       (indent-line 4 "if (tags[0] != 0) {")
+       (indent-line 6 "size += 2;")
+       (indent-line 4 "}")
+       (indent-line 4 "for (int i = 1; i < len; i ++) {")
+       (indent-line 6 "if (tags[i - 1] + 1 != tags[i]) {")
+       (indent-line 8 "size += 2;")
+       (indent-line 6 "}")
+       (indent-line 4 "}")
+       (indent-line 2 "}")
+       (indent-line 2 "return size;")
+       (indent-line 0 "}"))))
+#+end_src
+*** 編碼器
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/dart.scm
+  (define (generate-dart-set-field-action sname field indent)
+    (let ((type (field-type field))
+          (tag (number->string (field-tag field)))
+          (name (>dart-token (field-name field))))
+      (let ((accessor (>dart-accessor sname name)))
+        (string-append
+         (indent-line indent "case " tag ":")
+         (if (primitive-type? type)
+             (string-append
+              (indent-line (+ indent 2) "if (" accessor " != 0) {")
+              (indent-line (+ indent 4) "count += 1;")
+              (indent-line (+ indent 4) "List<int> tmp = tightrope.padding(tag, nexttag, data, ptr, count);")
+              (indent-line (+ indent 4) "ptr = tmp[0];")
+              (indent-line (+ indent 4) "count = tmp[1];")
+              (indent-line (+ indent 4) "tag = nexttag + 1;")
+              (indent-line (+ indent 4) "if (" accessor " > 0" (if (eq? type 'byte) ") {" (string-append " && " accessor " < 16383) {")))
+              (indent-line (+ indent 6) "int t = (" accessor " + 1) << 1;")
+              (indent-line (+ indent 6) "ptr = tightrope.assign_short(data, ptr, t);")
+              (indent-line (+ indent 4) "} else {")
+              (indent-line (+ indent 6) "ptr = tightrope.assign_short_with_0(data, ptr);")
+              (indent-line (+ indent 6) "dtags.add(" tag ");")
+              (indent-line (+ indent 4) "}")
+              (indent-line (+ indent 2) "}"))
+             (string-append
+              (indent-line (+ indent 2) "if (" accessor " != null) {")
+              (indent-line (+ indent 4) "dtags.add(" tag ");")
+              (indent-line (+ indent 4) "count += 1;")
+              (indent-line (+ indent 4) "List<int> tmp = tightrope.padding(tag, nexttag, data, ptr, count);")
+              (indent-line (+ indent 4) "ptr = tmp[0];")
+              (indent-line (+ indent 4) "count = tmp[1];")
+              (indent-line (+ indent 4) "tag = nexttag + 1;")
+              (indent-line (+ indent 4) "ptr = tightrope.assign_short_with_0(data, ptr);")
+              (indent-line (+ indent 2) "}")))
+         (indent-line (+ indent 2) "break;")))))
+
+  (define (generate-dart-set-fields sname fields)
+    (let ((vsname (>dart-token sname))
+          (tname (>dart-object-type sname))
+          (max-tag+1 (number->string (+ (apply max (map (lambda(x) (field-tag x)) fields)) 1))))
+      (string-append
+       (indent-line 0 "int _set_fields(" tname " " vsname ", ByteData data, int offset, List<int> dtags) {")
+       (indent-line 2 "int ptr = offset + 2;")
+       (indent-line 2 "int count = 0;")
+       (indent-line 2 "int tag = 0;")
+       (indent-line 2 "int nexttag = 0;")
+       (indent-line 2 "while (nexttag < " max-tag+1 ") {")
+       (indent-line 4 "switch (nexttag) {")
+       (strcat (map (lambda (x) (generate-dart-set-field-action sname x 6)) fields))
+       (indent-line 4 "}")
+       (indent-line 4 "nexttag ++;")
+       (indent-line 2 "}")
+       (indent-line 2 "tightrope.assign_short(data, offset, count);")
+       (indent-line 2 "return ptr;")
+       (indent-line 0 "}"))))
+
+  (define (generate-dart-set-data-action sname field indent)
+    (let ((tag (number->string (field-tag field)))
+          (type (field-type field))
+          (name (>dart-token (field-name field))))
+      (let ((accessor (>dart-accessor sname name)))
+        (string-append
+         (indent-line indent "case " tag ":")
+         (if (array-type? type)
+             (let ((base-type (array-base-type type)))
+               (case base-type
+                 ((byte)
+                  (string-append
+                   (indent-line (+ indent 2) "int absize = " accessor ".length;")
+                   (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, absize);")
+                   (indent-line (+ indent 2) "for (var x in " accessor ") {")
+                   (indent-line (+ indent 4) "data.setUint8(ptr, x);")
+                   (indent-line (+ indent 4) "ptr ++;")
+                   (indent-line (+ indent 2) "}")))
+                 ((short)
+                  (string-append
+                   (indent-line (+ indent 2) "int assize = " accessor ".length << 1;")
+                   (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, assize);")
+                   (indent-line (+ indent 2) "for (var x in " accessor ") {")
+                   (indent-line (+ indent 4) "ptr = tightrope.assign_short(data, ptr, x);")
+                   (indent-line (+ indent 2) "}")))
+                 ((int)
+                  (string-append
+                   (indent-line (+ indent 2) "int aisize = " accessor ".length << 2;")
+                   (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, aisize);")
+                   (indent-line (+ indent 2) "for (var x in " accessor ") {")
+                   (indent-line (+ indent 4) "ptr = tightrope.assign_int(data, ptr, x);")
+                   (indent-line (+ indent 2) "}")))
+                 ((long)
+                  (string-append
+                   (indent-line (+ indent 2) "int alsize = " accessor ".length << 3;")
+                   (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, alsize);")
+                   (indent-line (+ indent 2) "for (var x in " accessor ") {")
+                   (indent-line (+ indent 4) "ptr = tightrope.assign_long(data, ptr, x);")
+                   (indent-line (+ indent 2) "}")))
+                 ((string)
+                  (string-append
+                   (indent-line (+ indent 2) "int astrsize = 4;")
+                   (indent-line (+ indent 2) "int base = ptr;")
+                   (indent-line (+ indent 2) "ptr += 4;")
+                   (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, " accessor ".length);")
+                   (indent-line (+ indent 2) "for (var x in " accessor ") {")
+                   (indent-line (+ indent 4) "List<int> str = utf8encoder.convert(x);")
+                   (indent-line (+ indent 4) "int slen = str.length;")
+                   (indent-line (+ indent 4) "astrsize += slen + 4;")
+                   (indent-line (+ indent 4) "ptr = tightrope.assign_int(data, ptr, slen);")
+                   (indent-line (+ indent 4) "for (var y in str) {")
+                   (indent-line (+ indent 6) "data.setUint8(ptr, y);")
+                   (indent-line (+ indent 6) "ptr ++;")
+                   (indent-line (+ indent 4) "}")
+                   (indent-line (+ indent 2) "}")
+                   (indent-line (+ indent 2) "tightrope.assign_int(data, base, astrsize);")))
+                 (else
+                  (string-append
+                   (indent-line (+ indent 2) "int aobjsize = 4;")
+                   (indent-line (+ indent 2) "int base = ptr;")
+                   (indent-line (+ indent 2) "ptr += 4;")
+                   (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, " accessor ".length);")
+                   (indent-line (+ indent 2) "for (var o in " accessor ") {")
+                   (indent-line (+ indent 4) "List<int> obj = " (>dart-token (symbol->string base-type)) ".encode(o);")
+                   (indent-line (+ indent 4) "aobjsize += obj.length + 4;")
+                   (indent-line (+ indent 4) "ptr = tightrope.assign_int(data, ptr, obj.length);")
+                   (indent-line (+ indent 4) "for (var y in obj) {")
+                   (indent-line (+ indent 6) "data.setUint8(ptr, y);")
+                   (indent-line (+ indent 6) "ptr ++;")
+                   (indent-line (+ indent 4) "}")
+                   (indent-line (+ indent 2) "}")
+                   (indent-line (+ indent 2) "tightrope.assign_int(data, base, aobjsize);")))))
+             (case type
+               ((byte)
+                (string-append
+                 (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, 1);")
+                 (indent-line (+ indent 2) "data.setUint8(ptr, " accessor ");")
+                 (indent-line (+ indent 2) "ptr ++;")))
+               ((short)
+                (string-append
+                 (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, 2);")
+                 (indent-line (+ indent 2) "ptr = tightrope.assign_short(data, ptr, " accessor ");")))
+               ((int)
+                (string-append
+                 (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, 4);")
+                 (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, " accessor ");")))
+               ((long)
+                (string-append
+                 (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, 8);")
+                 (indent-line (+ indent 2) "ptr = tightrope.assign_long(data, ptr, " accessor ");")))
+               ((string)
+                (string-append
+                 (indent-line (+ indent 2) "List<int> str = utf8encoder.convert(" accessor ");")
+                 (indent-line (+ indent 2) "ptr = tightrope.assign_int(data, ptr, str.length);")
+                 (indent-line (+ indent 2) "for (var x in str) {")
+                 (indent-line (+ indent 4) "data.setUint8(ptr, x);")
+                 (indent-line (+ indent 4) "ptr ++;")
+                 (indent-line (+ indent 2) "}")))
+               (else
+                (let ((objname (>dart-token (symbol->string type))))
+                  (string-append
+                   (indent-line (+ indent 2) "int tmpptr = ptr;")
+                   (indent-line (+ indent 2) "ptr = " objname ".encode(" accessor ", data, ptr + 4, utf8encoder);")
+                   (indent-line (+ indent 2) "tightrope.assign_int(data, tmpptr, ptr - tmpptr - 4);"))))))
+         (indent-line (+ indent 2) "break;")))))
+
+  (define (generate-dart-set-data sname fields)
+    (let ((vsname (>dart-token sname))
+          (tname (>dart-object-type sname)))
+      (string-append
+       (indent-line 0 "int _set_data(" tname " " vsname ", ByteData data, int offset, List<int> dtags, Utf8Encoder utf8encoder) {")
+       (indent-line 2 "int ptr = offset;")
+       (indent-line 2 "for (var dtag in dtags) {")
+       (indent-line 4 "switch (dtag) {")
+       (strcat (map (lambda (x) (generate-dart-set-data-action sname x 6)) fields))
+       (indent-line 6 "default: break;")
+       (indent-line 4 "}")
+       (indent-line 2 "}")
+       (indent-line 2 "return ptr;")
+       (indent-line 0 "}"))))
+
+  (define (generate-dart-encoder sname fields)
+    (let ((vsname (>dart-token sname))
+          (tname (>dart-object-type sname)))
+      (string-append
+       (generate-dart-set-fields sname fields)
+       (generate-dart-set-data sname fields)
+       (indent-line 0 "int encode(" tname " " vsname ", ByteData data, int offset, Utf8Encoder utf8encoder) {")
+       (indent-line 2 "List<int> dtags = [];")
+       (indent-line 2 "int offset0 = _set_fields(" vsname ", data, offset, dtags);")
+       (indent-line 2 "int offset1 = _set_data(" vsname ", data, offset0, dtags, utf8encoder);")
+       (indent-line 2 "return offset1;")
+       (indent-line 0 "}"))))
+#+end_src
+*** 解碼器
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/dart.scm
+  (define (generate-dart-parse-fields-action sname field indent)
+    (let ((name (>dart-token (field-name field)))
+          (tag (number->string (field-tag field)))
+          (type (field-type field)))
+      (let ((accessor (>dart-accessor sname name)))
+        (string-append
+         (indent-line indent "} else if (tag == " tag ") {")
+         (indent-line (+ indent 2) "tag += 1;")
+         (indent-line (+ indent 2) accessor " = ((value >> 1) - 1);")))))
+
+  (define (generate-dart-parse-fields sname fields)
+    (let ((vsname (>dart-token sname))
+          (tname (>dart-object-type sname)))
+      (string-append
+       (indent-line 0 "int _parse_fields(ByteData data, int offset, " tname " " vsname ", List<int> dtags) {")
+       (indent-line 2 "int ptr = offset;")
+       (indent-line 2 "int tag = 0;")
+       (indent-line 2 "int count = data.getUint16(ptr, Endian.big);")
+       (indent-line 2 "ptr += 2;")
+       (indent-line 2 "if (count == 0) {")
+       (indent-line 4 "return 0;")
+       (indent-line 2 "}")
+       (indent-line 2 "for (int i = 0; i < count; i ++) {")
+       (indent-line 4 "int value = data.getUint16(ptr, Endian.big);")
+       (indent-line 4 "ptr += 2;")
+       (indent-line 4 "if ((value & 0x01) == 1) {")
+       (indent-line 6 "tag += (value - 1) >> 1;")
+       (indent-line 4 "} else if (value == 0) {")
+       (indent-line 6 "dtags.add(tag);")
+       (indent-line 6 "tag += 1;")
+       (strcat (map (lambda (x) (generate-dart-parse-fields-action sname x 4)) (filter (lambda (y) (primitive-type? (field-type y))) fields)))
+       (indent-line 4 "} else {")
+       (indent-line 6 "tag += 1;")
+       (indent-line 4 "}")
+       (indent-line 2 "}")
+       (indent-line 2 "return ptr;")
+       (indent-line 0 "}"))))
+
+  (define (generate-dart-parse-data-action sname field indent)
+    (let ((name (field-name field))
+          (tag (number->string (field-tag field)))
+          (type (field-type field)))
+      (let ((accessor (>dart-accessor sname name)))
+        (string-append
+         (indent-line indent "case " tag ":")
+         (if (array-type? type)
+             (let ((base-type (array-base-type type)))
+               (case base-type
+                 ((byte)
+                  (string-append
+                   (indent-line (+ indent 2) "int size = data.getUint32(ptr, Endian.big);")
+                   (indent-line (+ indent 2) "ptr += 4;")
+                   (indent-line (+ indent 2) accessor " = Int8List(size);")
+                   (indent-line (+ indent 2) "for (int i = 0; i < size; i ++) {")
+                   (indent-line (+ indent 4) accessor "[i]=data.getUint8(ptr ++);")
+                   (indent-line (+ indent 2) "}")
+                   (indent-line (+ indent 2) "break;")))
+                 ((short)
+                  (string-append
+                   (indent-line (+ indent 2) "int size = data.getUint32(ptr, Endian.big);")
+                   (indent-line (+ indent 2) "ptr += 4;")
+                   (indent-line (+ indent 2) accessor " = List<int>(size >> 1);")
+                   (indent-line (+ indent 2) "for (int i = 0, len = size >> 1; i < len; i ++) {")
+                   (indent-line (+ indent 4) accessor "[i]=data.getInt16(ptr, Endian.big);")
+                   (indent-line (+ indent 4) "ptr += 2;")
+                   (indent-line (+ indent 2) "}")
+                   (indent-line (+ indent 2) "break;")))
+                 ((int)
+                  (string-append
+                   (indent-line (+ indent 2) "int size = data.getUint32(ptr, Endian.big);")
+                   (indent-line (+ indent 2) "ptr += 4;")
+                   (indent-line (+ indent 2) accessor " = List<int>(size >> 2);")
+                   (indent-line (+ indent 2) "for (int i = 0, len = size >> 2; i < len; i ++) {")
+                   (indent-line (+ indent 4) accessor "[i]=data.getInt32(ptr, Endian.big);")
+                   (indent-line (+ indent 4) "ptr += 4;")
+                   (indent-line (+ indent 2) "}")
+                   (indent-line (+ indent 2) "break;")))
+                 ((long)
+                  (string-append
+                   (indent-line (+ indent 2) "int size = data.getUint32(ptr, Endian.big);")
+                   (indent-line (+ indent 2) "ptr += 4;")
+                   (indent-line (+ indent 2) accessor " = List<int>(size >> 3);")
+                   (indent-line (+ indent 2) "for (int i = 0, len = size >> 3; i < len; i ++) {")
+                   (indent-line (+ indent 4) accessor "[i]=data.getInt64(ptr, Endian.big);")
+                   (indent-line (+ indent 4) "ptr += 8;")
+                   (indent-line (+ indent 2) "}")
+                   (indent-line (+ indent 2) "break;")))
+                 ((string)
+                  (string-append
+                   (indent-line (+ indent 2) "int size = data.getUint32(ptr, Endian.big);")
+                   (indent-line (+ indent 2) "ptr += 4;")
+                   (indent-line (+ indent 2) "int cnt = data.getUint32(ptr, Endian.big);")
+                   (indent-line (+ indent 2) "ptr += 4;")
+                   (indent-line (+ indent 2) accessor " = [];")
+                   (indent-line (+ indent 2) "for (int i = 0; i < cnt; i ++) {")
+                   (indent-line (+ indent 4) "int strlen = data.getUint32(ptr, Endian.big);")
+                   (indent-line (+ indent 4) "ptr += 4;")
+                   (indent-line (+ indent 4) accessor ".add(utf8decoder.convert(data.buffer.asUint8List(ptr, strlen)));")
+                   (indent-line (+ indent 4) "ptr += strlen;")
+                   (indent-line (+ indent 2) "}")))
+                 (else
+                  (string-append
+                   (indent-line (+ indent 2) "int size = data.getUint32(ptr, Endian.big);")
+                   (indent-line (+ indent 2) "ptr += 4;")
+                   (indent-line (+ indent 2) "int cnt = data.getUint32(ptr, Endian.big);")
+                   (indent-line (+ indent 2) "ptr += 4;")
+                   (indent-line (+ indent 2) accessor " = [];")
+                   (indent-line (+ indent 2) "for (int i = 0; i < cnt; i ++) {")
+                   (indent-line (+ indent 4) "int objsize = data.getUint32(ptr, Endian.big);")
+                   (indent-line (+ indent 4) "ptr += 4;")
+                   (indent-line (+ indent 4) accessor ".add(" (>dart-token (symbol->string base-type)) ".decode(data, ptr);")
+                   (indent-line (+ indent 4) "ptr += objsize;")
+                   (indent-line (+ indent 2) "}")))))
+             (case type
+               ((byte)
+                (string-append
+                 (indent-line (+ indent 2) "ptr += 4;")
+                 (indent-line (+ indent 2) accessor " = data.getUint8(ptr ++);")))
+               ((short)
+                (string-append
+                 (indent-line (+ indent 2) "ptr += 4;")
+                 (indent-line (+ indent 2) accessor " = data.getInt16(ptr, Endian.big);")
+                 (indent-line (+ indent 2) "ptr += 2;")))
+               ((int)
+                (string-append
+                 (indent-line (+ indent 2) "ptr += 4;")
+                 (indent-line (+ indent 2) accessor " = data.getInt32(ptr, Endian.big);")
+                 (indent-line (+ indent 2) "ptr += 4;")))
+               ((long)
+                (string-append
+                 (indent-line (+ indent 2) "ptr += 4;")
+                 (indent-line (+ indent 2) accessor " = data.getInt64(ptr, Endian.big);")
+                 (indent-line (+ indent 2) "ptr += 8;")))
+               ((string)
+                (string-append
+                 (indent-line (+ indent 2) "int strlen = data.getUint32(ptr, Endian.big);")
+                 (indent-line (+ indent 2) "ptr += 4;")
+                 (indent-line (+ indent 2) accessor " = utf8decoder.convert(data.buffer.asUint8List(ptr, strlen));")
+                 (indent-line (+ indent 2) "ptr += strlen;")))
+               (else
+                (string-append
+                 (indent-line (+ indent 2) "int objsize = data.getUint32(ptr, Endian.big);")
+                 (indent-line (+ indent 2) "ptr += 4;")
+                 (indent-line (+ indent 2) accessor " = " (>dart-token (symbol->string type)) ".decode(data, ptr, utf8decoder);")
+                 (indent-line (+ indent 2) "ptr += objsize;")))))
+         (indent-line (+ indent 2) "break;")))))
+
+  (define (generate-dart-parse-data sname fields)
+    (let ((vsname (>dart-token sname))
+          (tname (>dart-object-type sname)))
+      (string-append
+       (indent-line 0 "int _parse_data(ByteData data, int offset, " tname " " vsname ", List<int> dtags, Utf8Decoder utf8decoder) {")
+       (indent-line 2 "int ptr = offset;")
+       (indent-line 2 "for (var dtag in dtags) {")
+       (indent-line 4 "switch (dtag) {")
+       (strcat (map (lambda (x) (generate-dart-parse-data-action sname x 6)) fields))
+       (indent-line 6 "default:")
+       (indent-line 8 "int size = data.getUint32(ptr, Endian.big);")
+       (indent-line 8 "ptr += 4;")
+       (indent-line 8 "ptr += size;")
+       (indent-line 8 "break;")
+       (indent-line 4 "}")
+       (indent-line 2 "}")
+       (indent-line 2 "return ptr;")
+       (indent-line 0 "}"))))
+
+  (define (generate-dart-decoder sname fields)
+    (let ((vsname (>dart-token sname))
+          (tname (>dart-object-type sname)))
+      (string-append
+       (generate-dart-parse-fields sname fields)
+       (generate-dart-parse-data sname fields)
+       (indent-line 0 tname " decode(ByteData data, int offset, Utf8Decoder utf8decoder) {")
+       (indent-line 2 tname " " vsname " = " tname "();")
+       (indent-line 2 "List<int> dtags = [];")
+       (indent-line 2 "int offset0 = _parse_fields(data, offset, " vsname ", dtags);")
+       (indent-line 2 "if (offset0 > 0) {")
+       (indent-line 4 "_parse_data(data, offset0, " vsname ", dtags, utf8decoder);")
+       (indent-line 2 "}")
+       (indent-line 2 "return " vsname ";")
+       (indent-line 0 "}"))))
+#+end_src
+*** 主體
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/dart.scm
+  (define (generate-dart-tightrope-runtime path)
+    (let ((src "
+  import 'dart:typed_data';
+
+  List<int> padding(int tag, int nexttag, ByteData data, int offset, int count) {
+    List<int> result = List<int>(2);
+    if (tag == nexttag) {
+      result[0] = offset;
+      result[1] = count;
+    } else {
+      int t = ((nexttag - tag) << 1) + 1;
+      data.setUint16(offset, t, Endian.big);
+      count += 1;
+      result[0] = offset + 2;
+      result[1] = count;
+    }
+    return result;
+  }
+
+  int assign_short(ByteData data, int offset, int value) {
+    data.setUint16(offset, value, Endian.big);
+    return offset + 2;
+  }
+
+  int assign_short_with_0(ByteData data, int offset) {
+    data.setUint16(offset, 0, Endian.big);
+    return offset + 2;
+  }
+
+  int assign_int(ByteData data, int offset, int value) {
+    data.setUint32(offset, value, Endian.big);
+    return offset + 4;
+  }
+
+  int assign_long(ByteData data, int offset, int value) {
+    data.setUint64(offset, value, Endian.big);
+    return offset + 8;
+  }
+  "))
+      (with-output-to-file
+          (string-append path "tightrope.dart")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-dart-serial env struct dir)
+    (let ((name (struct-name struct))
+          (fields (struct-fields struct)))
+      (let ((calcsize (generate-dart-calculate-size name fields))
+            (encoder (generate-dart-encoder name fields))
+            (decoder (generate-dart-decoder name fields)))
+        (with-output-to-file
+            (string-append dir (>dart-token name) ".dart")
+          (lambda ()
+            (write-string (string-append calcsize encoder decoder)))
+          (list 'append)))))
+
+  (define (generate-dart-serials env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (generate-dart-tightrope-runtime path)
+      (generate-dart-zero-pack env dir)
+      (for-each
+       (lambda (entity) (generate-dart-serial env entity path))
+       (get-structs env))))
+#+end_src
+** 壓縮與解壓
+Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調用。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/dart.scm
+  (define (generate-dart-zero-pack-source path)
+    (let ((src "
+  import 'dart:typed_data';
+  import 'zeropack_fsm.dart' as fsm;
+
+  class _ZeropackContext {
+    int oocnt = 0;
+    int ffcnt = 0;
+    List<int> ffbuf = null;
+    int bitmap = 0;
+    List<int> bs = null;
+    List<int> buf = null;
+  }
+
+  class _ZeropackDelegate extends fsm.StateMachineDelegate<_ZeropackContext> {
+    void _save_oo(_ZeropackContext ctx) {
+      if (ctx.buf != null) {
+        ctx.buf.addAll([0, ctx.oocnt]);
+      } else {
+        ctx.buf = [0, 0, ctx.oocnt];
+      }
+      ctx.oocnt = 0;
+    }
+    void _save_ff(_ZeropackContext ctx) {
+      if (ctx.buf != null) {
+        ctx.buf.addAll([255, ctx.ffcnt]);
+        ctx.buf.addAll(ctx.ffbuf);
+      } else {
+        ctx.buf = [0, 255, ctx.ffcnt];
+        ctx.buf.addAll(ctx.ffbuf);
+      }
+      ctx.ffcnt = 0;
+      ctx.ffbuf = null;
+    }
+    void _add_ff(_ZeropackContext ctx) {
+      if (ctx.ffbuf != null) {
+        ctx.ffbuf.addAll(ctx.bs);
+      } else {
+        ctx.ffbuf = ctx.bs;
+      }
+    }
+    void _save_normal(_ZeropackContext ctx) {
+      if (ctx.buf != null) {
+        ctx.buf.add(ctx.bitmap);
+        ctx.buf.addAll(ctx.bs);
+      } else {
+        ctx.buf = [0, ctx.bitmap];
+        ctx.buf.addAll(ctx.bs);
+      }
+    }
+    void oocnt_equals_1(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      ctx.oocnt = 1;
+    }
+    void add_ff_comma_ffcnt_equals_1(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _add_ff(ctx);
+      ctx.ffcnt = 1;
+    }
+    void save_normal(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _save_normal(ctx);
+    }
+    void oocnt_plus_1(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      ctx.oocnt += 1;
+    }
+    void save_oo_comma_oocnt_equals_1(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _save_oo(ctx);
+      ctx.oocnt = 1;
+    }
+    void save_oo_comma_add_ff_comma_ffcnt_equals_1(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _save_oo(ctx);
+      _add_ff(ctx);
+      ctx.ffcnt = 1;
+    }
+    void save_oo_comma_save_normal(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _save_oo(ctx);
+      _save_normal(ctx);
+    }
+    void save_oo(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _save_oo(ctx);
+    }
+    void save_ff_comma_oocnt_equals_1(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _save_ff(ctx);
+      ctx.oocnt = 1;
+    }
+    void add_ff_comma_ffcnt_plus_1(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _add_ff(ctx);
+      ctx.ffcnt += 1;
+    }
+    void save_ff_comma_add_ff_comma_ffcnt_equals_1(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _save_ff(ctx);
+      _add_ff(ctx);
+      ctx.ffcnt = 1;
+    }
+    void save_ff_comma_save_normal(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _save_ff(ctx);
+      _save_normal(ctx);
+    }
+    void save_ff(_ZeropackContext ctx, fsm.State state, fsm.Event event) {
+      _save_ff(ctx);
+    }
+  }
+
+  ByteData pack(ByteData src) {
+    int srclen = src.lengthInBytes;
+    Uint8List tmp = Uint8List((srclen % 8 != 0 ? (8 - srclen % 8) : 0) + srclen);
+    for (int i = 0; i < srclen; i ++) {
+      tmp[i] = src.getUint8(i);
+    }
+    _ZeropackContext ctx = _ZeropackContext();
+    fsm.StateMachine zerofsm = fsm.StateMachine(_ZeropackDelegate());
+    for (int i = 0, len = tmp.lengthInBytes >> 3; i < len; i ++) {
+      int bitmap = 0;
+      int j = 0;
+      List<int> bs = [];
+      for (int k = 0; k < 8; k ++) {
+        int byte = tmp[i * 8 + k];
+        if (byte != 0) {
+          bitmap |= 1 << (8 - j - 1);
+          bs.add(byte);
+        }
+        j += 1;
+      }
+      if (bitmap == 0) {
+        if (ctx.oocnt == 255) {
+          zerofsm.process(ctx, fsm.Event.OO_COMMA_OOCNT_EQUALS_255);
+        } else {
+          zerofsm.process(ctx, fsm.Event.OO_COMMA_OOCNT_LESS_THAN_255);
+        }
+      } else if (bitmap == 255) {
+        ctx.bs = bs;
+        if (ctx.ffcnt == 255) {
+          zerofsm.process(ctx, fsm.Event.FF_COMMA_FFCNT_EQUALS_255);
+        } else {
+          zerofsm.process(ctx, fsm.Event.FF_COMMA_FFCNT_LESS_THAN_255);
+        }
+      } else {
+        ctx.bitmap = bitmap;
+        ctx.bs = bs;
+        zerofsm.process(ctx, fsm.Event.NORMAL);
+      }
+    }
+    zerofsm.process(ctx, fsm.Event.EOI);
+    if (ctx.buf != null) {
+      int scale = tmp.lengthInBytes ~/ ctx.buf.length;
+      if (tmp.lengthInBytes % ctx.buf.length != 0) {
+        scale ++;
+      }
+      ctx.buf[0] = scale;
+      Uint8List result = Uint8List.fromList(ctx.buf);
+      return ByteData.view(result.buffer);
+    } else {
+      return null;
+    }
+  }
+
+  ByteData unpack(ByteData srcbuf) {
+    List<int> buf = [];
+    Uint8List src = srcbuf.buffer.asUint8List();
+    int i = 1;
+    while (i < src.lengthInBytes) {
+      int byte = src[i];
+      switch (byte) {
+        case 0:
+          int cnt = src[i + 1];
+          buf.addAll(Uint8List(cnt << 3));
+          i += 2;
+          break;
+        case 255:
+          int cnt = src[i + 1];
+          i += 2;
+          for (int j = 0; j < cnt; j ++) {
+            buf.addAll(src.sublist(i + (j << 3), i + ((j + 1) << 3)));
+          }
+          i += (cnt << 3);
+          break;
+        default:
+          int bitmap = byte;
+          for (int j = 0; j < 8; j ++) {
+            if ((bitmap & (1 << (8 - j - 1))) != 0) {
+              i += 1;
+              buf.add(src[i]);
+            } else {
+              buf.add(0);
+            }
+          }
+          i ++;
+          break;
+      }
+    }
+    return ByteData.view(Uint8List.fromList(buf).buffer);
+  }
+  "))
+      (with-output-to-file
+          (string-append path "zeropack.dart")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+
+  (define (generate-dart-zero-pack-fsm-source path)
+    (let ((src "
+  enum State {
+    READY,
+    OO,
+    FF,
+    NORMAL,
+  }
+
+  enum Event {
+    OO_COMMA_OOCNT_LESS_THAN_255,
+    OO_COMMA_OOCNT_EQUALS_255,
+    FF_COMMA_FFCNT_LESS_THAN_255,
+    FF_COMMA_FFCNT_EQUALS_255,
+    NORMAL,
+    EOI,
+  }
+
+  abstract class StateMachineDelegate<C> {
+    void oocnt_equals_1(C ctx, State state, Event event);
+    void add_ff_comma_ffcnt_equals_1(C ctx, State state, Event event);
+    void save_normal(C ctx, State state, Event event);
+    void oocnt_plus_1(C ctx, State state, Event event);
+    void save_oo_comma_oocnt_equals_1(C ctx, State state, Event event);
+    void save_oo_comma_add_ff_comma_ffcnt_equals_1(C ctx, State state, Event event);
+    void save_oo_comma_save_normal(C ctx, State state, Event event);
+    void save_oo(C ctx, State state, Event event);
+    void save_ff_comma_oocnt_equals_1(C ctx, State state, Event event);
+    void add_ff_comma_ffcnt_plus_1(C ctx, State state, Event event);
+    void save_ff_comma_add_ff_comma_ffcnt_equals_1(C ctx, State state, Event event);
+    void save_ff_comma_save_normal(C ctx, State state, Event event);
+    void save_ff(C ctx, State state, Event event);
+  }
+
+  List<State> transform_states = <State>[State.OO, State.READY, State.FF, State.READY, State.NORMAL, State.READY, State.OO, State.OO, State.FF, State.OO, State.NORMAL, State.OO, State.OO, State.FF, State.FF, State.FF, State.NORMAL, State.FF, State.OO, State.NORMAL, State.FF, State.NORMAL, State.NORMAL, State.NORMAL];
+  class StateMachine<C> {
+    State state;
+    StateMachineDelegate<C> delegate;
+    List<void Function(C ctx, State state, Event event)> transform_actions;
+    StateMachine(StateMachineDelegate<C> delegate) {
+      this.delegate = delegate;
+      this.state = State.READY;
+      this.transform_actions = <void Function(C ctx, State state, Event event)>[this.delegate.oocnt_equals_1, null, this.delegate.add_ff_comma_ffcnt_equals_1, null, this.delegate.save_normal, null, this.delegate.oocnt_plus_1, this.delegate.save_oo_comma_oocnt_equals_1, this.delegate.save_oo_comma_add_ff_comma_ffcnt_equals_1, null, this.delegate.save_oo_comma_save_normal, this.delegate.save_oo, this.delegate.save_ff_comma_oocnt_equals_1, null, this.delegate.add_ff_comma_ffcnt_plus_1, this.delegate.save_ff_comma_add_ff_comma_ffcnt_equals_1, this.delegate.save_ff_comma_save_normal, this.delegate.save_ff, this.delegate.oocnt_equals_1, null, this.delegate.add_ff_comma_ffcnt_equals_1, null, this.delegate.save_normal, null];
+    }
+    void process(C ctx, Event event) {
+      int idx = this.state.index * 6 + event.index;
+      if (this.transform_actions[idx] != null) {
+        this.transform_actions[idx](ctx, this.state, event);
+      }
+      this.state = transform_states[idx];
+    }
+  }
+  "))
+      (with-output-to-file
+          (string-append path "zeropack_fsm.dart")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-dart-zero-pack env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (generate-dart-zero-pack-source path)
+      (generate-dart-zero-pack-fsm-source path)))
+#+end_src
+
+** 輔助函數
+#+begin_src scheme :noweb-ref utility
+  (define *dart-keywords* '("abstract" "as" "assert" "async" "await" "break" "case" "catch" "class" "const" "continue" "covariant" "default" "deferred" "do" "dynamic" "else" "enum" "export" "extends" "external" "factory" "false" "final" "finally" "for" "Function" "get" "hide" "if" "implements" "import" "in" "interface" "is" "library" "mixin" "new" "null" "on" "operator" "part" "rethrow" "return" "set" "show" "static" "super" "switch" "sync" "this" "throw" "true" "try" "typedef" "var" "void" "while" "with" "yield"))
+
+  (define (>dart-token name)
+    (let loop ((src (map char-downcase (string->list name)))
+               (dst '()))
+      (if (null? src)
+          (let ((result (list->string (reverse dst))))
+            (if (reduce (lambda (acc x) (or acc x)) #f (map (lambda (x) (equal? x result)) *dart-keywords*))
+                (begin
+                  (display (strcat (list "\"" name "\" is a keyword of dart language")))
+                  (abort))
+                result))
+          (let ((chr (car src))
+                (rest (cdr src)))
+            (if (eq? chr #\-)
+                (loop rest (cons #\_ dst))
+                (loop rest (cons chr dst)))))))
+
+  (define (>dart-object-type type)
+    (strcat (map (lambda (x) (string-titlecase x)) (string-split type ".-_"))))
+
+  (define (>dart-library-type type)
+    (>dart-token (symbol->string type)))
+
+  (define (>dart-type type)
+    (case type
+      ((byte short int long) "int")
+      ((string) "String")
+      (else (string-titlecase (>dart-token (symbol->string type))))))
+
+  (define (>dart-accessor object field)
+    (string-append (>dart-token object) "." (>dart-token field)))
+#+end_src

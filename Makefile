@@ -29,12 +29,12 @@ endif
 $(DOCUMENT): $(DOCSRC) $(PNGS)
 	cd $(BUILDDIR); pandoc --pdf-engine=xelatex --template $(THEME).tex -V CJKmainfont:$(FONT) -o $@ $(DOCSRC); cd -
 
-$(DOCSRC): prebuild | core.org java.org erlang.org clang.org nim.org python.org
-	$(CAT) core.org java.org erlang.org clang.org nim.org python.org > $(DOCSRC)
+$(DOCSRC): prebuild | core.org java.org erlang.org clang.org nim.org python.org dart.org
+	$(CAT) core.org java.org erlang.org clang.org nim.org python.org dart.org > $(DOCSRC)
 
-$(TARGETSRC): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/python.scm $(BUILDDIR)/main.scm
+$(TARGETSRC): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/python.scm $(BUILDDIR)/dart.scm $(BUILDDIR)/main.scm
 	$(ECHO) "(import (chezscheme))" > $(TARGETSRC)
-	$(CAT) $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/python.scm $(BUILDDIR)/main.scm >> $(TARGETSRC)
+	$(CAT) $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/python.scm $(BUILDDIR)/dart.scm $(BUILDDIR)/main.scm >> $(TARGETSRC)
 	$(ECHO) "(main (command-line))" >> $(TARGETSRC)
 	$(SED) -i -r '/\(load \".*\"\)/d' $(TARGETSRC)
 
@@ -67,6 +67,9 @@ $(BUILDDIR)/nim.scm: nim.org | prebuild
 	org-tangle $<
 
 $(BUILDDIR)/python.scm: python.org | prebuild
+	org-tangle $<
+
+$(BUILDDIR)/dart.scm: dart.org | prebuild
 	org-tangle $<
 
 clean:

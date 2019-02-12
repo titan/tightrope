@@ -763,12 +763,4 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
 
   (define (>python-accessor object field)
     (string-append (>python-token object) "." (>python-token field)))
-
-  (define (size-of-primitive-type type)
-    (case type
-      ((byte) 1)
-      ((short) 2)
-      ((int) 4)
-      ((long) 8)
-      (else 0)))
 #+end_src
