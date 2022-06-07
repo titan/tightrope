@@ -29,23 +29,23 @@ endif
 $(DOCUMENT): $(DOCSRC) $(PNGS)
 	cd $(BUILDDIR); pandoc --pdf-engine=xelatex --template $(THEME).tex -V CJKmainfont:$(FONT) -o $@ $(DOCSRC); cd -
 
-$(DOCSRC): prebuild | core.org java.org erlang.org clang.org nim.org python.org dart.org
-	$(CAT) core.org java.org erlang.org clang.org nim.org python.org dart.org > $(DOCSRC)
+$(DOCSRC): prebuild | core.org java.org erlang.org clang.org nim.org python.org dart.org pony.org
+	$(CAT) core.org java.org erlang.org clang.org nim.org python.org dart.org pony.org > $(DOCSRC)
 
-$(TARGETSRC): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/python.scm $(BUILDDIR)/dart.scm $(BUILDDIR)/main.scm
+$(TARGETSRC): $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/python.scm $(BUILDDIR)/dart.scm $(BUILDDIR)/pony.scm $(BUILDDIR)/main.scm
 	$(ECHO) "(import (chezscheme))" > $(TARGETSRC)
-	$(CAT) $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/python.scm $(BUILDDIR)/dart.scm $(BUILDDIR)/main.scm >> $(TARGETSRC)
+	$(CAT) $(BUILDDIR)/core.scm $(BUILDDIR)/java.scm $(BUILDDIR)/erlang.scm $(BUILDDIR)/clang.scm $(BUILDDIR)/nim.scm $(BUILDDIR)/python.scm $(BUILDDIR)/dart.scm $(BUILDDIR)/pony.scm $(BUILDDIR)/main.scm >> $(TARGETSRC)
 	$(ECHO) "(main (command-line))" >> $(TARGETSRC)
 	$(SED) -i -r '/\(load \".*\"\)/d' $(TARGETSRC)
 
 $(TARGETOBJ): $(TARGETSRC)
-	$(ECHO) '(compile-program "$(TARGETSRC)")' | chez-scheme -q --optimize-level 3
+	$(ECHO) '(compile-program "$(TARGETSRC)")' | chez -q --optimize-level 2
 
 $(TARGET): | prebuild
 	$(ECHO) '#! /bin/sh' > $(TARGET)
 	$(ECHO) 'LINK=`readlink -f $$0`' >> $(TARGET)
 	$(ECHO) 'BASE=`dirname $$LINK`' >> $(TARGET)
-	$(ECHO) 'chez-scheme --program $$BASE/$(NAME).so $$@' >> $(TARGET)
+	$(ECHO) 'chez --program $$BASE/$(NAME).so $$@' >> $(TARGET)
 	$(CHMOD) 755 $(TARGET)
 
 $(BUILDDIR)/%.png: %.aa | prebuild
@@ -70,6 +70,9 @@ $(BUILDDIR)/python.scm: python.org | prebuild
 	org-tangle $<
 
 $(BUILDDIR)/dart.scm: dart.org | prebuild
+	org-tangle $<
+
+$(BUILDDIR)/pony.scm: pony.org | prebuild
 	org-tangle $<
 
 clean:

@@ -1,0 +1,966 @@
+* pony 後端實現
+
+** 實體對象
+在 Tightrope pony 實現中，用 tuple 來實現數據結構，實體對象的名稱遵循 pony 語言的命名規則。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/pony.scm
+  <<utility>>
+
+  (define (generate-pony-field-declare field)
+    (let ((name (>pony-token (field-name field)))
+          (type (field-type field)))
+      (string-append (>pony-type type) " // " name)))
+
+  (define (generate-pony-entity-builder sname primitive-fields compound-fields)
+    (define (parameter-define field)
+      (let ((name (field-name field))
+            (type (field-type field)))
+        (cons (>pony-token name)
+              (if (primitive-type? type)
+                  (>pony-type type)
+                  (string-append (>pony-type type) " = None")))))
+    (let* ((primitives (map parameter-define primitive-fields))
+           (compounds (map parameter-define compound-fields))
+           (fields (append primitives compounds)))
+      (string-append
+       (indent-line 2 "fun val apply(")
+       (string-join
+        (map
+         (lambda (x)
+           (indent 4 (car x) "': " (cdr x))) fields) ",\n")
+       ")\n"
+       (indent-line 2 ": " (>pony-object-type sname) " =>")
+       (string-join
+        (cons (indent 4 "( " (car (car fields)) "'") (map (lambda (x) (string-append (car x) "'")) (cdr fields)))
+        (string-append "\n" (spaces 4) ", "))
+       "\n"
+       (indent-line 4 ")"))))
+
+  (define (generate-pony-entity-accessor sname field idx)
+    (let ((tname (>pony-object-type sname))
+          (fname (>pony-token (field-name field)))
+          (ftype (>pony-type (field-type field))))
+      (string-append
+       (indent-line 2 "fun val " fname "(")
+       (indent-line 4 "data: " tname ")")
+       (indent-line 2 ": " ftype " =>")
+       (indent-line 4 "data._" (number->string (+ 1 idx))))))
+
+  (define (generate-pony-entity-helper sname primitive-fields compound-fields)
+    (let* ((fields (append primitive-fields compound-fields))
+           (builder (generate-pony-entity-builder sname primitive-fields compound-fields))
+           (accessors (strcat (map (lambda (x) (generate-pony-entity-accessor sname (car x) (cdr x))) (map cons fields (enumerate fields))))))
+      (string-append builder accessors)))
+
+  (define (generate-pony-entity struct dir)
+    (let ((sname (>pony-token (struct-name struct))))
+      (let-values (((primitive-fields compound-fields) (partition (lambda (y) (primitive-type? (field-type y))) (struct-fields struct))))
+        (let* ((tname (>pony-object-type sname))
+               (fields (append primitive-fields compound-fields))
+               (field-decls (strcat (map (lambda (x) (indent-line 2 ", " (generate-pony-field-declare x))) (cdr fields))))
+               (content
+                (string-append
+                 (indent-line 0 "use \"buffered\"")
+                 (indent-line 0 "type " tname " is")
+                 (indent-line 2 "( " (generate-pony-field-declare (car fields)))
+                 field-decls
+                 (indent-line 2 ")")
+                 (indent-line 0 "primitive _" tname)
+                 (generate-pony-entity-helper sname primitive-fields compound-fields))))
+          (with-output-to-file
+              (string-append dir sname ".pony")
+            (lambda ()
+              (write-string content))
+            (list 'replace))))))
+
+  (define (generate-pony-entities env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (for-each
+       (lambda (entity) (generate-pony-entity entity path))
+       (get-structs env))))
+#+end_src
+
+** 序列化與反序列化
+*** 計算編碼大小
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/pony.scm
+  (define (generate-pony-calculate-size-recursive sname field indent)
+    (let ((type (field-type field))
+          (name (>pony-token (field-name field)))
+          (tag (number->string (field-tag field))))
+      (let ((accessor (string-append name "(data)")))
+        (if (array-type? type)
+            (let ((base-type (array-base-type type)))
+              (cond
+               ((primitive-type? base-type)
+                (string-append
+                 (indent-line indent "match " accessor)
+                 (indent-line indent "| let " name "': " (>pony-just-type type) " if " name "'.size() > 0 =>")
+                 (indent-line (+ indent 2) "tags.push(" tag ")")
+                 (indent-line (+ indent 2) "size = size + 2 + 4 + (" name "'.size() << " (number->string (case base-type (byte 0) (short 1) (int 2) (else 3))) ")")
+                 (indent-line indent "end")))
+               ((eq? base-type 'string)
+                (string-append
+                 (indent-line indent "match " accessor)
+                 (indent-line indent "| let " name "': " (>pony-just-type type) " if " name "'.size() > 0 =>")
+                 (indent-line (+ indent 2) "tags.push(" tag ")")
+                 (indent-line (+ indent 2) "size = size + 2 + 4 + 4")
+                 (indent-line (+ indent 2) "for str in " name "'.values() do")
+                 (indent-line (+ indent 4) "size = size + 4 + str.size()")
+                 (indent-line (+ indent 2) "end")
+                 (indent-line indent "end")))
+               (else
+                (string-append
+                 (indent-line indent "match " accessor)
+                 (indent-line indent "| let " name "': " (>pony-just-type type) " =>")
+                 (indent-line (+ indent 2) "tags.push(" tag ")")
+                 (indent-line (+ indent 2) "size = size + 2 + 4 + 4")
+                 (indent-line (+ indent 2) "for e in " name "'.values() do")
+                 (indent-line (+ indent 4) "size = size + 4 + _" (>pony-object-type (symbol->string base-type)) ".calculate_size(e)")
+                 (indent-line (+ indent 2) "end")
+                 (indent-line indent "end")))))
+            (cond
+             ((primitive-type? type)
+              (string-append
+               (indent-line indent "if " accessor " != 0 then")
+               (string-append
+                (indent-line (+ indent 2) "tags.push(" tag ")")
+                (if (eq? type 'byte)
+                    (indent-line (+ indent 2) "if " accessor " > 0 then")
+                    (indent-line (+ indent 2) "if (" accessor " > 0) and (" accessor " < 16383) then"))
+                (indent-line (+ indent 4) "size = size + 2")
+                (indent-line (+ indent 2) "else")
+                (indent-line (+ indent 4) "size = size + 2 + 4 + " (number->string (case type (byte 1) (short 2) (int 4) (else 8))))
+                (indent-line (+ indent 2) "end")
+                (indent-line indent "end"))))
+             ((eq? type 'string)
+              (string-append
+               (indent-line indent "match " accessor)
+               (indent-line indent "| let " name "': String val =>")
+               (indent-line (+ indent 2) "tags.push(" tag ")")
+               (indent-line (+ indent 2) "size = size + 2 + 4 + " name "'.size()")
+               (indent-line indent "end")))
+             (else
+              (string-append
+               (indent-line indent "match " accessor)
+               (indent-line indent "| let " name "': " (>pony-just-type type) " =>")
+               (indent-line (+ indent 2) "tags.push(" tag ")")
+               (indent-line (+ indent 2) "size = size + 2 + 4 + _" (>pony-object-type (symbol->string type)) ".calculate_size(" name "')")
+               (indent-line indent "end"))))))))
+
+  (define (generate-pony-calculate-size sname fields)
+    (let ((vsname (>pony-token sname))
+          (tname (>pony-object-type sname)))
+      (string-append
+       (indent-line 2 "fun calculate_size(")
+       (indent-line 4 "data: " tname ")")
+       (indent-line 2 ": USize =>")
+       (indent-line 4 "var size: USize = 2")
+       (indent-line 4 "let tags: Array[USize] = Array[USize](" (number->string (length fields)) ")")
+       (strcat (map (lambda (x) (generate-pony-calculate-size-recursive sname x 4)) fields))
+       (indent-line 4 "if tags.size() > 0 then")
+       (indent-line 6 "if (try tags(0)? != 0 else false end) then")
+       (indent-line 8 "size = size + 2")
+       (indent-line 6 "end")
+       (indent-line 6 "var idx: USize = 1")
+       (indent-line 6 "while idx < tags.size() do")
+       (indent-line 8 "if (try (tags(idx - 1)? + 1) != tags(idx)? else false end) then")
+       (indent-line 10 "size = size + 2")
+       (indent-line 8 "end")
+       (indent-line 8 "idx = idx + 1")
+       (indent-line 6 "end")
+       (indent-line 4 "end")
+       (indent-line 4 "size"))))
+#+end_src
+*** 編碼器
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/pony.scm
+  (define (generate-pony-set-field-action sname field indent)
+    (let ((type (field-type field))
+          (tag (number->string (field-tag field)))
+          (name (>pony-token (field-name field))))
+      (let ((accessor (string-append name "(data)")))
+        (string-append
+         (indent-line indent "| " tag " =>")
+         (if (primitive-type? type)
+             (string-append
+              (indent-line (+ indent 2) "if " accessor " != 0 then")
+              (indent-line (+ indent 4) "count = count + 1 + Tightrope.padding(tagidx, nexttag, buf)")
+              (indent-line (+ indent 4) "tagidx = nexttag + 1")
+              (if (eq? type 'byte)
+                  (indent-line (+ indent 4) "if " accessor " > 0 then" )
+                  (indent-line (+ indent 4) "if (" accessor " > 0) and (" accessor " < 16383) then"))
+              (indent-line (+ indent 6) "Tightrope.assign_short(buf, ((" accessor " + 1) << 1).u16())")
+              (indent-line (+ indent 4) "else")
+              (indent-line (+ indent 6) "Tightrope.assign_short_with_0(buf)")
+              (indent-line (+ indent 6) "dtags.push(" tag ")")
+              (indent-line (+ indent 4) "end")
+              (indent-line (+ indent 2) "end"))
+             (string-append
+              (indent-line (+ indent 2) "match " accessor)
+              (indent-line (+ indent 2) "| let " name "': " (>pony-just-type type) " =>")
+              (indent-line (+ indent 4) "dtags.push(" tag ")")
+              (indent-line (+ indent 4) "count = count + 1 + Tightrope.padding(tagidx, nexttag, buf)")
+              (indent-line (+ indent 4) "tagidx = nexttag + 1")
+              (indent-line (+ indent 4) "Tightrope.assign_short_with_0(buf)")
+              (indent-line (+ indent 2) "end")))))))
+
+  (define (generate-pony-set-fields sname fields)
+    (let ((tname (>pony-object-type sname))
+          (max-tag+1 (number->string (+ (apply max (map (lambda(x) (field-tag x)) fields)) 1))))
+      (string-append
+       (indent-line 2 "fun val _set_fields(")
+       (indent-line 4 "data: " tname ",")
+       (indent-line 4 "buf: Array[U8] ref)")
+       (indent-line 2 ": Array[USize] val =>")
+       (indent-line 4 "let base: USize = buf.size()")
+       (indent-line 4 "buf.push(0)")
+       (indent-line 4 "buf.push(0)")
+       (indent-line 4 "var nexttag: USize = 0")
+       (indent-line 4 "var tagidx: USize = 0")
+       (indent-line 4 "var count: USize = 0")
+       (indent-line 4 "let dtags: Array[USize] iso = recover iso Array[USize](" (number->string (length fields)) ") end")
+       (indent-line 4 "while nexttag < " max-tag+1 " do")
+       (indent-line 6 "match nexttag")
+       (strcat (map (lambda (x) (generate-pony-set-field-action sname x 6)) fields))
+       (indent-line 6 "end")
+       (indent-line 6 "nexttag = nexttag + 1")
+       (indent-line 4 "end")
+       (indent-line 4 "let ch: U8 = ((count and 0xFF00) >> 8).u8()")
+       (indent-line 4 "let cl: U8 = ((count and 0x00FF) >> 0).u8()")
+       (indent-line 4 "try")
+       (indent-line 6 "buf(base + 0)? = ch")
+       (indent-line 6 "buf(base + 1)? = cl")
+       (indent-line 4 "end")
+       (indent-line 4 "consume dtags"))))
+
+  (define (generate-pony-set-data-action sname field indent)
+    (let ((tag (number->string (field-tag field)))
+          (type (field-type field))
+          (name (>pony-token (field-name field))))
+      (let ((accessor (string-append name "(data)")))
+        (string-append
+         (indent-line indent "| " tag " =>")
+         (if (array-type? type)
+             (let ((base-type (array-base-type type)))
+               (case base-type
+                 ((byte)
+                  (string-append
+                   (indent-line (+ indent 2) "match " accessor)
+                   (indent-line (+ indent 2) "| let " name "': " (>pony-just-type type) " if " name "'.size() > 0 =>")
+                   (indent-line (+ indent 4) "Tightrope.assign_int(buf, " name "'.size().u32())")
+                   (indent-line (+ indent 4) "buf.copy_from(" name "', 0, buf.size(), " name "'.size())")
+                   (indent-line (+ indent 2) "end")))
+                 ((short)
+                  (string-append
+                   (indent-line (+ indent 2) "match " accessor)
+                   (indent-line (+ indent 2) "| let " name "': " (>pony-just-type type) " if " name "'.size() > 0 =>")
+                   (indent-line (+ indent 4) "Tightrope.assign_int(buf, (" name "'.size() << 1).u32())")
+                   (indent-line (+ indent 4) "for x in " name "'.values() do")
+                   (indent-line (+ indent 6) "Tightrope.assign_short(buf, x.u16())")
+                   (indent-line (+ indent 4) "end")
+                   (indent-line (+ indent 2) "end")))
+                 ((int)
+                  (string-append
+                   (indent-line (+ indent 2) "match " accessor)
+                   (indent-line (+ indent 2) "| let " name "': " (>pony-just-type type) " if " name "'.size() > 0 =>")
+                   (indent-line (+ indent 4) "Tightrope.assign_int(buf, (" name "'.size() << 2).u32())")
+                   (indent-line (+ indent 4) "for x in " name "'.values() do")
+                   (indent-line (+ indent 6) "Tightrope.assign_int(buf, x.u32())")
+                   (indent-line (+ indent 4) "end")
+                   (indent-line (+ indent 2) "end")))
+                 ((long)
+                  (string-append
+                   (indent-line (+ indent 2) "match " accessor)
+                   (indent-line (+ indent 2) "| let " name "': " (>pony-just-type type) " if " name "'.size() > 0 =>")
+                   (indent-line (+ indent 4) "Tightrope.assign_int(buf, (" name "'.size() << 3).u32())")
+                   (indent-line (+ indent 4) "for x in " name "'.values() do")
+                   (indent-line (+ indent 6) "Tightrope.assign_long(buf, x.u64())")
+                   (indent-line (+ indent 4) "end")
+                   (indent-line (+ indent 2) "end")))
+                 ((string)
+                  (string-append
+                   (indent-line (+ indent 2) "match " accessor)
+                   (indent-line (+ indent 2) "| let " name "': " (>pony-just-type type) " if " name "'.size() > 0 =>")
+                   (indent-line (+ indent 4) "var total_size: USize = 4")
+                   (indent-line (+ indent 4) "var base: USize = buf.size()")
+                   (indent-line (+ indent 4) "buf.push(0)")
+                   (indent-line (+ indent 4) "buf.push(0)")
+                   (indent-line (+ indent 4) "buf.push(0)")
+                   (indent-line (+ indent 4) "buf.push(0)")
+                   (indent-line (+ indent 4) "Tightrope.assign_int(buf, " name "'.size().u32())")
+                   (indent-line (+ indent 4) "for x in " name "'.values() do")
+                   (indent-line (+ indent 6) "Tightrope.assign_int(buf, x.size().u32())")
+                   (indent-line (+ indent 6) "for y in x.array().values() do")
+                   (indent-line (+ indent 8) "buf.push(y)")
+                   (indent-line (+ indent 6) "end")
+                   (indent-line (+ indent 6) "total_size = total_size + x.size() + 4")
+                   (indent-line (+ indent 4) "end")
+                   (indent-line (+ indent 4) "let hh = ((total_size and 0xFF000000) >> 24).u8()")
+                   (indent-line (+ indent 4) "let hl = ((total_size and 0x00FF0000) >> 16).u8()")
+                   (indent-line (+ indent 4) "let lh = ((total_size and 0x0000FF00) >> 08).u8()")
+                   (indent-line (+ indent 4) "let ll = ((total_size and 0x000000FF) >> 00).u8()")
+                   (indent-line (+ indent 4) "try")
+                   (indent-line (+ indent 6) "buf(base + 0)? = hh")
+                   (indent-line (+ indent 6) "buf(base + 1)? = hl")
+                   (indent-line (+ indent 6) "buf(base + 2)? = lh")
+                   (indent-line (+ indent 6) "buf(base + 3)? = ll")
+                   (indent-line (+ indent 4) "end")
+                   (indent-line (+ indent 2) "end")))
+                 (else
+                  (string-append
+                   (indent-line (+ indent 2) "match " accessor)
+                   (indent-line (+ indent 2) "| let " name "': " (>pony-just-type type) " if " name "'.size() > 0 =>")
+                   (indent-line (+ indent 4) "var total_size: USize = 4")
+                   (indent-line (+ indent 4) "var base: USize = buf.size()")
+                   (indent-line (+ indent 4) "buf.push(0)")
+                   (indent-line (+ indent 4) "buf.push(0)")
+                   (indent-line (+ indent 4) "buf.push(0)")
+                   (indent-line (+ indent 4) "buf.push(0)")
+                   (indent-line (+ indent 4) "Tightrope.assign_int(buf, " name "'.size().u32())")
+                   (indent-line (+ indent 4) "for x in " name "'.values() do")
+                   (indent-line (+ indent 6) "let base': USize = buf.size()")
+                   (indent-line (+ indent 6) "buf.push(0)")
+                   (indent-line (+ indent 6) "buf.push(0)")
+                   (indent-line (+ indent 6) "buf.push(0)")
+                   (indent-line (+ indent 6) "buf.push(0)")
+                   (indent-line (+ indent 6) "_" (>pony-object-type base-type) ".encode(x, buf)")
+                   (indent-line (+ indent 6) "let xsize: USize = buf.size() - base' - 4")
+                   (indent-line (+ indent 6) "total_size = total_size + 4 + xsize")
+                   (indent-line (+ indent 6) "let hh' = ((xsize and 0xFF000000) >> 24).u8()")
+                   (indent-line (+ indent 6) "let hl' = ((xsize and 0x00FF0000) >> 16).u8()")
+                   (indent-line (+ indent 6) "let lh' = ((xsize and 0x0000FF00) >> 08).u8()")
+                   (indent-line (+ indent 6) "let ll' = ((xsize and 0x000000FF) >> 00).u8()")
+                   (indent-line (+ indent 6) "try")
+                   (indent-line (+ indent 8) "buf(base' + 0)? = hh'")
+                   (indent-line (+ indent 8) "buf(base' + 1)? = hl'")
+                   (indent-line (+ indent 8) "buf(base' + 2)? = lh'")
+                   (indent-line (+ indent 8) "buf(base' + 3)? = ll'")
+                   (indent-line (+ indent 6) "end")
+                   (indent-line (+ indent 4) "end")
+                   (indent-line (+ indent 4) "let hh = ((total_size and 0xFF000000) >> 24).u8()")
+                   (indent-line (+ indent 4) "let hl = ((total_size and 0x00FF0000) >> 16).u8()")
+                   (indent-line (+ indent 4) "let lh = ((total_size and 0x0000FF00) >> 08).u8()")
+                   (indent-line (+ indent 4) "let ll = ((total_size and 0x000000FF) >> 00).u8()")
+                   (indent-line (+ indent 4) "try")
+                   (indent-line (+ indent 6) "buf(base + 0)? = hh")
+                   (indent-line (+ indent 6) "buf(base + 1)? = hl")
+                   (indent-line (+ indent 6) "buf(base + 2)? = lh")
+                   (indent-line (+ indent 6) "buf(base + 3)? = ll")
+                   (indent-line (+ indent 4) "end")
+                   (indent-line (+ indent 2) "end")))))
+             (case type
+               ((byte)
+                (string-append
+                 (indent-line (+ indent 2) "Tightrope.assign_int(buf, U32(1))")
+                 (indent-line (+ indent 2) "buf.push(" accessor ")")))
+               ((short)
+                (string-append
+                 (indent-line (+ indent 2) "Tightrope.assign_int(buf, U32(2))")
+                 (indent-line (+ indent 2) "Tightrope.assign_short(buf, " accessor ".u16())")))
+               ((int)
+                (string-append
+                 (indent-line (+ indent 2) "Tightrope.assign_int(buf, U32(4))")
+                 (indent-line (+ indent 2) "Tightrope.assign_int(buf, " accessor ".u32())")))
+               ((long)
+                (string-append
+                 (indent-line (+ indent 2) "Tightrope.assign_int(buf, U32(8))")
+                 (indent-line (+ indent 2) "Tightrope.assign_long(buf, " accessor ".u64())")))
+               ((string)
+                (string-append
+                 (indent-line (+ indent 2) "match " accessor)
+                 (indent-line (+ indent 2) "| let " name "': " (>pony-just-type type) " if " name "'.size() > 0 =>")
+                 (indent-line (+ indent 4) "Tightrope.assign_int(buf, " name "'.size().u32())")
+                 (indent-line (+ indent 4) "for x in " name "'.array().values() do")
+                 (indent-line (+ indent 6) "buf.push(x)")
+                 (indent-line (+ indent 4) "end")
+                 (indent-line (+ indent 2) "end")))
+               (else
+                (string-append
+                 (indent-line (+ indent 2) "match " accessor)
+                 (indent-line (+ indent 2) "| let " name "': " (>pony-just-type type) " =>")
+                 (indent-line (+ indent 4) "let base: USize = buf.size()")
+                 (indent-line (+ indent 4) "buf.push(0)")
+                 (indent-line (+ indent 4) "buf.push(0)")
+                 (indent-line (+ indent 4) "buf.push(0)")
+                 (indent-line (+ indent 4) "buf.push(0)")
+                 (indent-line (+ indent 4) "_" (>pony-object-type (symbol->string type)) ".encode(" name "', buf)")
+                 (indent-line (+ indent 4) "let xsize: USize = buf.size() - base - 4")
+                 (indent-line (+ indent 4) "let hh = ((xsize and 0xFF000000) >> 24).u8()")
+                 (indent-line (+ indent 4) "let hl = ((xsize and 0x00FF0000) >> 16).u8()")
+                 (indent-line (+ indent 4) "let lh = ((xsize and 0x0000FF00) >> 08).u8()")
+                 (indent-line (+ indent 4) "let ll = ((xsize and 0x000000FF) >> 00).u8()")
+                 (indent-line (+ indent 4) "try")
+                 (indent-line (+ indent 6) "buf(base + 0)? = hh")
+                 (indent-line (+ indent 6) "buf(base + 1)? = hl")
+                 (indent-line (+ indent 6) "buf(base + 2)? = lh")
+                 (indent-line (+ indent 6) "buf(base + 3)? = ll")
+                 (indent-line (+ indent 4) "end")
+                 (indent-line (+ indent 2) "end")))))))))
+
+  (define (generate-pony-set-data sname fields)
+    (let ((tname (>pony-object-type sname)))
+      (string-append
+       (indent-line 2 "fun val _set_data(")
+       (indent-line 4 "data: " tname ",")
+       (indent-line 4 "buf: Array[U8] ref,")
+       (indent-line 4 "dtags: Array[USize] val)")
+       (indent-line 2 "=>")
+       (indent-line 4 "for dtag in dtags.values() do")
+       (indent-line 6 "match dtag")
+       (strcat (map (lambda (x) (generate-pony-set-data-action sname x 6)) fields))
+       (indent-line 6 "end")
+       (indent-line 4 "end"))))
+
+  (define (generate-pony-encoder sname fields)
+    (let ((tname (>pony-object-type sname)))
+      (string-append
+       (generate-pony-set-fields sname fields)
+       (generate-pony-set-data sname fields)
+       (indent-line 2 "fun val encode(")
+       (indent-line 4 "data: " tname ",")
+       (indent-line 4 "buf: Array[U8] ref)")
+       (indent-line 2 "=>")
+       (indent-line 4 "let dtags: Array[USize] val = _set_fields(data, buf)")
+       (indent-line 4 "_set_data(data, buf, dtags)"))))
+#+end_src
+*** 解碼器
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/pony.scm
+  (define (generate-pony-parse-fields-action sname field indent)
+    (let ((name (>pony-token (field-name field)))
+          (tag (number->string (field-tag field)))
+          (type (field-type field)))
+      (let ((accessor name))
+        (string-append
+         (indent-line indent "elseif tagidx == " tag " then")
+         (indent-line (+ indent 2) "tagidx = tagidx + 1")
+         (case type
+           ((byte) (indent-line (+ indent 2) accessor "' = ((value >> 1) - 1).u8()"))
+           ((short) (indent-line (+ indent 2) accessor "' = ((value >> 1) - 1).i16()"))
+           ((int) (indent-line (+ indent 2) accessor "' = ((value >> 1) - 1).i32()"))
+           ((long) (indent-line (+ indent 2) accessor "' = ((value >> 1) - 1).i64()"))
+           (else ""))))))
+
+  (define (generate-pony-parse-fields sname primitive-fields)
+    (let ((tname (>pony-object-type sname)))
+      (string-append
+       (indent-line 2 "fun val _parse_fields(")
+       (indent-line 4 "buf: Reader ref)")
+       (if (> (length primitive-fields) 0)
+           (indent-line 2 ": (" (string-join (cons "Array[USize] val" (map (lambda (x) (>pony-type (field-type x))) primitive-fields)) ", ") ") =>")
+           (indent-line 2 ": Array[USize] val =>"))
+       (strcat (map (lambda (x) (indent-line 4 "var " (>pony-token (field-name x)) "': " (>pony-type (field-type x)) " = 0")) primitive-fields))
+       (indent-line 4 "let dtags: Array[USize] iso = recover iso Array[USize](" (number->string (length primitive-fields)) ") end")
+       (indent-line 4 "let count: USize = try buf.u16_be()?.usize() else 0 end")
+       (indent-line 4 "if (count == 0) then")
+       (if (> (length primitive-fields) 0)
+           (indent-line 6 "return (" (string-join (cons "consume dtags" (map (lambda (x) (string-append (>pony-token (field-name x)) "'")) primitive-fields)) ", ") ")")
+           (indent-line 6 "return consume dtags"))
+       (indent-line 4 "end")
+       (indent-line 4 "var idx: USize = 0")
+       (indent-line 4 "var tagidx: USize = 0")
+       (indent-line 4 "while idx < count do")
+       (indent-line 6 "let value: U16 = try buf.u16_be()? else 0 end")
+       (indent-line 6 "if (value and 0x0001) == 0x0001 then")
+       (indent-line 8 "tagidx = tagidx + ((value - 1) >> 1).usize()")
+       (indent-line 6 "elseif value == 0 then")
+       (indent-line 8 "dtags.push(tagidx)")
+       (indent-line 8 "tagidx = tagidx + 1")
+       (strcat (map (lambda (x) (generate-pony-parse-fields-action sname x 6)) primitive-fields))
+       (indent-line 6 "else")
+       (indent-line 8 "tagidx = tagidx + 1")
+       (indent-line 6 "end")
+       (indent-line 6 "idx = idx + 1")
+       (indent-line 4 "end")
+       (if (> (length primitive-fields) 0)
+           (indent-line 4 "(" (string-join (cons "consume dtags" (map (lambda (x) (string-append (>pony-token (field-name x)) "'")) primitive-fields)) ", ") ")")
+           (indent-line 4 "consume dtags")))))
+
+  (define (generate-pony-parse-data-action sname field indent)
+    (let ((name (field-name field))
+          (tag (number->string (field-tag field)))
+          (type (field-type field)))
+      (let ((accessor (>pony-token name)))
+        (string-append
+         (indent-line indent "| " tag " =>")
+         (if (array-type? type)
+             (let ((base-type (array-base-type type)))
+               (case base-type
+                 ((byte)
+                  (string-append
+                   (indent-line (+ indent 2) "let size: USize = try buf.u32_be()?.usize() else 0 end")
+                   (indent-line (+ indent 2) "let " accessor "'': Array[U8] iso = recover iso Array[U8](size) end")
+                   (indent-line (+ indent 2) "var idx: USize = 0")
+                   (indent-line (+ indent 2) "while idx < size do")
+                   (indent-line (+ indent 4) accessor "''.push(try buf.u8()? else 0 end)")
+                   (indent-line (+ indent 4) "idx = idx + 1")
+                   (indent-line (+ indent 2) "end")
+                   (indent-line (+ indent 2) accessor "' = consume " accessor "''")))
+                 ((short)
+                  (string-append
+                   (indent-line (+ indent 2) "let size: USize = try buf.u32_be()?.usize() >> 1 else 0 end")
+                   (indent-line (+ indent 2) "let " accessor "'': Array[I16] iso = recover iso Array[I16](size) end")
+                   (indent-line (+ indent 2) "var idx: USize = 0")
+                   (indent-line (+ indent 2) "while idx < size do")
+                   (indent-line (+ indent 4) accessor "''.push(try buf.u16_be()?.i16() else 0 end)")
+                   (indent-line (+ indent 4) "idx = idx + 1")
+                   (indent-line (+ indent 2) "end")
+                   (indent-line (+ indent 2) accessor "' = consume " accessor "''")))
+                 ((int)
+                  (string-append
+                   (indent-line (+ indent 2) "let size: USize = try buf.u32_be()?.usize() >> 2 else 0 end")
+                   (indent-line (+ indent 2) "let " accessor "'': Array[I32] iso = recover iso Array[I32](size) end")
+                   (indent-line (+ indent 2) "var idx: USize = 0")
+                   (indent-line (+ indent 2) "while idx < size do")
+                   (indent-line (+ indent 4) accessor "''.push(try buf.u32_be()?.i32() else 0 end)")
+                   (indent-line (+ indent 4) "idx = idx + 1")
+                   (indent-line (+ indent 2) "end")
+                   (indent-line (+ indent 2) accessor "' = consume " accessor "''")))
+                 ((long)
+                  (string-append
+                   (indent-line (+ indent 2) "let size: USize = try buf.u32_be()?.usize() >> 3 else 0 end")
+                   (indent-line (+ indent 2) "let " accessor "'': Array[I64] iso = recover iso Array[I64](size) end")
+                   (indent-line (+ indent 2) "var idx: USize = 0")
+                   (indent-line (+ indent 2) "while idx < size do")
+                   (indent-line (+ indent 4) accessor "''.push(try buf.u64_be()?.i64() else 0 end)")
+                   (indent-line (+ indent 4) "idx = idx + 1")
+                   (indent-line (+ indent 2) "end")
+                   (indent-line (+ indent 2) accessor "' = consume " accessor "''")))
+                 ((string)
+                  (string-append
+                   (indent-line (+ indent 2) "try buf.skip(4)? end")
+                   (indent-line (+ indent 2) "let size: USize = try buf.u32_be()?.usize() else 0 end")
+                   (indent-line (+ indent 2) "let " accessor "'': Array[String val] iso = recover iso Array[String val](size) end")
+                   (indent-line (+ indent 2) "var idx: USize = 0")
+                   (indent-line (+ indent 2) "while idx < size do")
+                   (indent-line (+ indent 4) "let len: USize = try buf.u32_be()?.usize() else 0 end")
+                   (indent-line (+ indent 4) "let x: String iso = recover iso String(len) end")
+                   (indent-line (+ indent 4) "var j: USize = 0")
+                   (indent-line (+ indent 4) "while j < len do")
+                   (indent-line (+ indent 6) "x.push(try buf.u8()? else 0 end)")
+                   (indent-line (+ indent 6) "j = j + 1")
+                   (indent-line (+ indent 4) "end")
+                   (indent-line (+ indent 4) accessor "''.push(consume x)")
+                   (indent-line (+ indent 4) "idx = idx + 1")
+                   (indent-line (+ indent 2) "end")
+                   (indent-line (+ indent 2) accessor "' = consume " accessor "''")))
+                 (else
+                  (string-append
+                   (indent-line (+ indent 2) "try buf.skip(4)? end")
+                   (indent-line (+ indent 2) "let size: USize = try buf.u32_be()?.usize() else 0 end")
+                   (indent-line (+ indent 2) "let " accessor "'': Array[" (>pony-object-type (symbol->string base-type)) "] iso = recover iso Array[" (>pony-object-type (symbol->string  base-type)) "](size) end")
+                   (indent-line (+ indent 2) "var idx: USize = 0")
+                   (indent-line (+ indent 2) "while idx < size do")
+                   (indent-line (+ indent 2) "try buf.skip(4)? end")
+                   (indent-line (+ indent 4) accessor "''.push(_" (>pony-object-type (symbol->string base-type)) ".decode(buf))")
+                   (indent-line (+ indent 4) "idx = idx + 1")
+                   (indent-line (+ indent 2) "end")
+                   (indent-line (+ indent 2) accessor "' = consume " accessor "''")))))
+             (case type
+               ((byte)
+                (string-append
+                 (indent-line (+ indent 2) "try buf.skip(4)? end")
+                 (indent-line (+ indent 2) accessor "' = try buf.u8()? else 0 end")))
+               ((short)
+                (string-append
+                 (indent-line (+ indent 2) "try buf.skip(4)? end")
+                 (indent-line (+ indent 2) accessor "' = try buf.u16_be()?.i16() else 0 end")))
+               ((int)
+                (string-append
+                 (indent-line (+ indent 2) "try buf.skip(4)? end")
+                 (indent-line (+ indent 2) accessor "' = try buf.u32_be()?.i32() else 0 end")))
+               ((long)
+                (string-append
+                 (indent-line (+ indent 2) "try buf.skip(4)? end")
+                 (indent-line (+ indent 2) accessor "' = try buf.u64_be()?.i64() else 0 end")))
+               ((string)
+                (string-append
+                 (indent-line (+ indent 2) "let size: USize = try buf.u32_be()?.usize() else 0 end")
+                 (indent-line (+ indent 2) "let " accessor "'': String iso = recover iso String(size) end")
+                 (indent-line (+ indent 2) "var idx: USize = 0")
+                 (indent-line (+ indent 2) "while idx < size do")
+                 (indent-line (+ indent 4) accessor "''.push(try buf.u8()? else 0 end)")
+                 (indent-line (+ indent 4) "idx = idx + 1")
+                 (indent-line (+ indent 2) "end")
+                 (indent-line (+ indent 2) accessor "' = consume " accessor "''")))
+               (else
+                (string-append
+                 (indent-line (+ indent 2) "let size: USize = try buf.u32_be()?.usize() else 0 end")
+                 (indent-line (+ indent 2) accessor "' = _" (>pony-object-type (symbol->string type)) ".decode(buf)")))))))))
+
+  (define (generate-pony-parse-data sname primitive-fields compound-fields)
+    (let ((tname (>pony-object-type sname)))
+      (string-append
+       (indent-line 2 "fun val _parse_data(")
+       (indent-line 4 "buf: Reader ref,")
+       (string-join (cons (indent 4 "dtags: Array[USize] val") (map (lambda (x) (indent 4 (>pony-token (field-name x)) "'': " (>pony-type (field-type x)))) primitive-fields)) ",\n")
+       ")\n"
+       (indent-line 2 ": " tname " =>")
+       (strcat (map (lambda (x) (indent-line 4 "var " (>pony-token (field-name x)) "': " (>pony-type (field-type x)) " = " (>pony-token (field-name x)) "''")) primitive-fields))
+       (strcat (map (lambda (x) (indent-line 4 "var " (>pony-token (field-name x)) "': " (>pony-type (field-type x)) " = None ")) compound-fields))
+       (indent-line 4 "for dtag in dtags.values() do")
+       (indent-line 6 "match dtag")
+       (strcat (map (lambda (x) (generate-pony-parse-data-action sname x 6)) primitive-fields))
+       (strcat (map (lambda (x) (generate-pony-parse-data-action sname x 6)) compound-fields))
+       (indent-line 6 "else")
+       (indent-line 8 "let size: USize = try buf.u32_be()?.usize() else 0 end")
+       (indent-line 8 "try buf.skip(size)? end")
+       (indent-line 6 "end")
+       (indent-line 4 "end")
+       (indent-line 4 "(" (string-join (map (lambda (x) (string-append (>pony-token (field-name x)) "'")) (append primitive-fields compound-fields)) ", ") ")"))))
+
+  (define (generate-pony-decoder sname primitive-fields compound-fields)
+    (let ((tname (>pony-object-type sname))
+          (args (map (lambda (x) (string-append (>pony-token (field-name x)) "'")) primitive-fields)))
+      (string-append
+         (generate-pony-parse-fields sname primitive-fields)
+         (generate-pony-parse-data sname primitive-fields compound-fields)
+         (indent-line 2 "fun val decode(")
+         (indent-line 4 "buf: Reader ref)")
+         (indent-line 2 ": " tname " =>")
+         (indent-line 4 "var data: (" tname " | None) = None")
+         (indent-line 4 "(" (string-join (cons "let dtags: Array[USize] val" (map (lambda (x) (string-append "let " (>pony-token (field-name x)) "': " (>pony-type (field-type x)))) primitive-fields)) ", ") ") = _parse_fields(buf)")
+         (indent-line 4 "if buf.size() > 0 then")
+         (indent-line 6 "_parse_data(buf, " (string-join (cons "dtags" args) ", ") ")")
+         (indent-line 4 "else")
+         (indent-line 6 "_" tname "(" (string-join args ", ") ")")
+         (indent-line 4 "end"))))
+#+end_src
+*** 主體
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/pony.scm
+  (define (generate-pony-tightrope-runtime path)
+    (let ((src "
+  primitive Tightrope
+    fun val padding(
+      tagidx: USize,
+      nexttag: USize,
+      data: Array[U8] ref)
+    : USize =>
+      if tagidx != nexttag then
+        let t: USize = ((nexttag - tagidx) << 1) + 1
+        let h: U8 = ((t and 0xFF00) >> 8).u8()
+        let l: U8 = ((t and 0x00FF) >> 0).u8()
+        data.push(h)
+        data.push(l)
+        1
+      else
+        0
+      end
+
+    fun val assign_short(
+      data: Array[U8] ref,
+      value: U16)
+    =>
+      let h = ((value and 0xFF00) >> 8).u8()
+      let l = ((value and 0x00FF) >> 0).u8()
+      data.push(h)
+      data.push(l)
+
+    fun val assign_short_with_0(
+      data: Array[U8] ref)
+    =>
+      data.push(0)
+      data.push(0)
+
+    fun val assign_int(
+      data: Array[U8] ref,
+      value: U32)
+    =>
+      let hh = ((value and 0xFF000000) >> 24).u8()
+      let hl = ((value and 0x00FF0000) >> 16).u8()
+      let lh = ((value and 0x0000FF00) >> 08).u8()
+      let ll = ((value and 0x000000FF) >> 00).u8()
+      data.push(hh)
+      data.push(hl)
+      data.push(lh)
+      data.push(ll)
+
+    fun val assign_long(
+      data: Array[U8] ref,
+      value: U64)
+    =>
+      let hhh = ((value and 0xFF00000000000000) >> 56).u8()
+      let hhl = ((value and 0x00FF000000000000) >> 48).u8()
+      let hlh = ((value and 0x0000FF0000000000) >> 40).u8()
+      let hll = ((value and 0x000000FF00000000) >> 32).u8()
+      let lhh = ((value and 0x00000000FF000000) >> 24).u8()
+      let lhl = ((value and 0x0000000000FF0000) >> 16).u8()
+      let llh = ((value and 0x000000000000FF00) >> 08).u8()
+      let lll = ((value and 0x00000000000000FF) >> 00).u8()
+      data.push(hhh)
+      data.push(hhl)
+      data.push(hlh)
+      data.push(hll)
+      data.push(lhh)
+      data.push(lhl)
+      data.push(llh)
+      data.push(lll)
+
+  "))
+      (with-output-to-file
+          (string-append path "tightrope.pony")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-pony-serial env struct dir)
+    (let ((name (struct-name struct))
+          (fields (struct-fields struct)))
+      (let-values (((primitive-fields compound-fields) (partition (lambda (y) (primitive-type? (field-type y))) fields)))
+        (with-output-to-file
+              (string-append dir (>pony-token name) ".pony")
+            (lambda ()
+              (write-string
+               (string-append
+                (generate-pony-calculate-size name fields)
+                (generate-pony-encoder name fields)
+                (generate-pony-decoder name primitive-fields compound-fields))))
+            (list 'append)))))
+
+  (define (generate-pony-serials env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (generate-pony-tightrope-runtime path)
+      (generate-pony-zero-pack env dir)
+      (for-each
+       (lambda (entity) (generate-pony-serial env entity path))
+       (get-structs env))))
+#+end_src
+** 壓縮與解壓
+Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調用。
+
+#+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/pony.scm
+  (define (generate-pony-zero-pack-source path)
+    (let ((src "
+
+  use \"buffered\"
+  use \"collections\"
+
+  primitive _Normal
+
+  primitive _OO
+
+  primitive _FF
+
+  type _State is (_Normal | _OO | _FF)
+
+  primitive Zeropack
+    fun val pack(
+      src: Array[U8] val)
+    : Array[U8] iso^ =>
+      let buf: Array[U8] iso = recover iso Array[U8](src.size() + 1 + ((src.size() / 8) + 1)) end
+      var ffcnt: USize = 0
+      var ffpos: USize = 0
+      var oocnt: USize = 0
+      var oopos: USize = 0
+      var frame: Array[U8] = Array[U8](8)
+      var bufsize: USize = src.size() + (if (src.size() %% 8) != 0 then (8 - (src.size() %% 8)) else 0 end)
+      var state: _State = _Normal
+      let reader: Reader = Reader
+      reader.append(src)
+
+      buf.push(0) // reversed for factor of size
+
+      for i in Range(0, (bufsize / 8)) do
+        var bitmap: U8 = 0
+        frame.clear()
+        for j in Range(0, 8) do
+          let byte: U8 = try reader.u8()? else 0 end
+          if byte != 0 then
+            bitmap = bitmap or (1 << (8 - j - 1)).u8()
+            frame.push(byte)
+          end
+        end
+        match bitmap
+        | 0x00 =>
+          match state
+          | _OO =>
+            if oocnt == 0xFF then
+              buf.push(0xFF)
+              buf.push(0x00)
+              oopos = buf.size()
+              buf.push(0x00) // reversed for oocnt
+              oocnt = 1
+            else
+              oocnt = oocnt + 1
+            end
+          | _FF =>
+            try buf(ffpos)? = ffcnt.u8() end
+            ffcnt = 0
+            buf.push(0x00)
+            oopos = buf.size()
+            buf.push(0x00) // reversed for oocnt
+            oocnt = 1
+            state = _OO
+          else
+            buf.push(0x00)
+            oopos = buf.size()
+            buf.push(0x00) // reversed for oocnt
+            oocnt = 1
+            state = _OO
+          end
+        | 0xFF =>
+          match state
+          | _OO =>
+            try buf(oopos)? = oocnt.u8() end
+            oocnt = 0
+            buf.push(0xFF)
+            ffpos = buf.size()
+            buf.push(0x00) // reversed for ffcnt
+            ffcnt = 1
+            state = _FF
+          | _FF =>
+            if ffcnt == 0xFF then
+              buf.push(0xFF)
+              buf.push(0xFF)
+              ffpos = buf.size()
+              buf.push(0x00) // reversed for ffcnt
+              ffcnt = 1
+            else
+              ffcnt = ffcnt + 1
+            end
+          else
+            buf.push(0xFF)
+            ffpos = buf.size()
+            buf.push(0x00) // reversed for ffcnt
+            ffcnt = 1
+            state = _FF
+          end
+          var idx: USize = 0
+          while idx < frame.size() do
+            buf.push(try frame(idx)? else 0 end)
+            idx = idx + 1
+          end
+        else
+          match state
+          | _OO =>
+            try buf(oopos)? = oocnt.u8() end
+            oocnt = 0
+            state = _Normal
+          | _FF =>
+            try buf(ffpos)? = ffcnt.u8() end
+            ffcnt = 0
+            state = _Normal
+          end
+          buf.push(bitmap)
+          var idx: USize = 0
+          while idx < frame.size() do
+            buf.push(try frame(idx)? else 0 end)
+            idx = idx + 1
+          end
+        end
+      end
+      if oocnt > 0 then
+        try buf(oopos)? = oocnt.u8() end
+      elseif ffcnt > 0 then
+        try buf(ffpos)? = ffcnt.u8() end
+      end
+      try
+        buf(0)? = ((src.size() / buf.size()) + (if (src.size() %% buf.size()) == 0 then 0 else 1 end)).u8()
+      end
+      consume buf
+
+    fun val unpack(
+      src: Array[U8] val)
+    : Array[U8] iso^ =>
+      let buf: Array[U8] iso = recover iso Array[U8](try src.size() * src(0)?.usize() else src.size() end) end
+      let reader: Reader = Reader
+      reader.append(src)
+      try
+        reader.skip(1)?
+        while reader.size() > 0 do
+          let bitmap: U8 = reader.u8()?
+          match bitmap
+          | 0x00 =>
+            let cnt: USize = reader.u8()?.usize()
+            for i in Range(0, cnt * 8) do
+              buf.push(0x00)
+            end
+          | 0xFF =>
+            let cnt: USize = reader.u8()?.usize()
+            for i in Range(0, cnt * 8) do
+              buf.push(reader.u8()?)
+            end
+          else
+            for i in Range(0, 8) do
+              if (bitmap and (1 << (8 - i - 1)).u8()) != 0 then
+                buf.push(reader.u8()?)
+              else
+                buf.push(0)
+              end
+            end
+          end
+        end
+      end
+      consume buf
+  "))
+      (with-output-to-file
+          (string-append path "zeropack.pony")
+        (lambda ()
+          (write-string src))
+        (list 'replace))))
+
+  (define (generate-pony-zero-pack env dir)
+    (let ((path dir))
+      (if (and (> (string-length path) 0) (not (file-exists? path)))
+          (mkdir-p path))
+      (generate-pony-zero-pack-source path)))
+#+end_src
+
+** 輔助函數
+#+begin_src scheme :noweb-ref utility
+  (define *pony-keywords* '("actor" "as" "be" "box" "break" "class" "compile_error" "compile_intrinsic" "continue" "consume" "digestof" "do" "else" "elseif" "embed" "end" "error" "for" "fun" "if" "ifdef" "iftype" "in" "interface" "is" "isnt" "iso" "let" "match" "new" "not" "object" "primitive" "recover" "ref" "repeat" "return" "struct" "tag" "then" "this" "trait" "trn" "try" "type" "until" "use" "var" "val" "where" "while" "with"))
+
+  (define *tightrope-keywords* '("buf", "data", "idx", "x", "y"))
+
+  (define (>pony-token name)
+    (let loop ((src (map char-downcase (string->list name)))
+               (dst '()))
+      (if (null? src)
+          (let ((result (list->string (reverse dst))))
+            (if (reduce (lambda (acc x) (or acc x)) #f (map (lambda (x) (equal? x result)) *pony-keywords*))
+                (begin
+                  (display (strcat (list "\"" name "\" is a keyword of pony language")))
+                  (abort))
+                (if (reduce (lambda (acc x) (or acc x)) #f (map (lambda (x) (equal? x result)) *tightrope-keywords*))
+                    (begin
+                      (display (strcat (list "\"" name "\" is a keyword of tightrope")))
+                      (abort))
+                    result)))
+          (let ((chr (car src))
+                (rest (cdr src)))
+            (if (eq? chr #\-)
+                (loop rest (cons #\_ dst))
+                (loop rest (cons chr dst)))))))
+
+  (define (>pony-object-type type)
+    (strcat (map (lambda (x) (string-titlecase x)) (string-split type ".-_"))))
+
+  (define (>pony-base-type type)
+    (case type
+      ((byte) "U8")
+      ((short) "I16")
+      ((int) "I32")
+      ((long) "I64")
+      ((string) "(String val | None)")
+      (else (string-append "(" (>pony-object-type (symbol->string type)) " | None)"))))
+
+  (define (>pony-just-type type)
+    (if (array-type? type)
+        (if (string-array-type? type)
+            "Array[String val] val"
+            (string-append "Array[" (>pony-base-type (array-base-type type)) "] val"))
+        (case type
+          ((byte) "U8")
+          ((short) "I16")
+          ((int) "I32")
+          ((long) "I64")
+          ((string) "String val")
+          (else (>pony-object-type (symbol->string type))))))
+
+  (define (>pony-type type)
+    (if (array-type? type)
+        (string-append "(Array[" (>pony-just-type (array-base-type type)) "] val | None)")
+        (>pony-base-type type)))
+#+end_src

@@ -146,7 +146,7 @@ capnproto 類似的壓縮零方法：
 ** 命令行接口
 #+begin_src scheme :exports code :noweb yes :tangle /dev/shm/tightrope-build/main.scm
   (define (usage prog)
-    (let ((prompt (string-append "Usage: chez-scheme --program " prog " [option] <source files>\nOptions:\n"))
+    (let ((prompt (string-append "Usage: scheme --program " prog " [option] <source files>\nOptions:\n"))
           (options '(" -entity        Generate entity code\n"
                      " -serial        Generate serialize/deserialize code\n"
                      " -erlang        Generate codes for Erlang\n"
@@ -155,6 +155,7 @@ capnproto 類似的壓縮零方法：
                      " -nim           Generate codes for Nim\n"
                      " -python        Generate codes for Python3\n"
                      " -dart          Generate codes for Dart\n"
+                     " -pony          Generate codes for Pony\n"
                      " -d <directory> Specify where to place generated files\n")))
       (let loop ((opts options)
                  (opts-str ""))
@@ -175,7 +176,7 @@ capnproto 類似的壓縮零方法：
       (close-input-port in)
       ast))
 
-  (define (do-work entity? serial? dart? python? nim? clang? erlang? java? dir files)
+  (define (do-work entity? serial? pony? dart? python? nim? clang? erlang? java? dir files)
     (for-each
      (lambda (f)
        (let ((env (read-file f)))
@@ -210,7 +211,11 @@ capnproto 類似的壓縮零方法：
          (if dart?
              (begin
                (generate-dart-entities env dir)
-               (generate-dart-serials env dir))))) files))
+               (generate-dart-serials env dir)))
+         (if pony?
+             (begin
+               (generate-pony-entities env dir)
+               (generate-pony-serials env dir))))) files))
 
   (define (main argv)
     (let ((prog (car argv)))
@@ -219,6 +224,7 @@ capnproto 類似的壓縮零方法：
           (let loop ((args (cdr argv))
                      (entity? #f)
                      (serial? #f)
+                     (pony? #f)
                      (dart? #f)
                      (python? #f)
                      (nim? #f)
@@ -231,42 +237,44 @@ capnproto 類似的壓縮零方法：
                 (if (null? files)
                     (usage prog)
                     (if (string=? dir "")
-                        (do-work entity? serial? dart? python? nim? clang? erlang? java? dir files)
+                        (do-work entity? serial? pony? dart? python? nim? clang? erlang? java? dir files)
                         (let ((last-char (string-ref dir (- (string-length dir) 1))))
                           (if (file-exists? dir)
-                              (do-work entity? serial? dart? python? nim? clang? erlang? java? (if (not (char=? last-char #\/)) (string-append dir "/") dir) files)
+                              (do-work entity? serial? pony? dart? python? nim? clang? erlang? java? (if (not (char=? last-char #\/)) (string-append dir "/") dir) files)
                               (begin
                                 (mkdir-p dir)
-                                (do-work entity? serial? dart? python? nim? clang? erlang? java? (if (not (char=? last-char #\/)) (string-append dir "/") dir) files))))))
+                                (do-work entity? serial? pony? dart? python? nim? clang? erlang? java? (if (not (char=? last-char #\/)) (string-append dir "/") dir) files))))))
                 (let ((arg (car args)))
                   (cond
                    ((equal? arg "-entity")
-                    (loop (cdr args) #t serial? dart? python? nim? clang? erlang? java? dir files))
+                    (loop (cdr args) #t serial? pony? dart? python? nim? clang? erlang? java? dir files))
                    ((equal? arg "-serial")
-                    (loop (cdr args) entity? #t dart? python? nim? clang? erlang? java? dir files))
+                    (loop (cdr args) entity? #t pony? dart? python? nim? clang? erlang? java? dir files))
+                   ((equal? arg "-pony")
+                    (loop (cdr args) entity? serial? #t dart? python? nim? clang? erlang? java? dir files))
                    ((equal? arg "-dart")
-                    (loop (cdr args) entity? serial? #t python? nim? clang? erlang? java? dir files))
+                    (loop (cdr args) entity? serial? pony? #t python? nim? clang? erlang? java? dir files))
                    ((equal? arg "-python")
-                    (loop (cdr args) entity? serial? dart? #t nim? clang? erlang? java? dir files))
+                    (loop (cdr args) entity? serial? pony? dart? #t nim? clang? erlang? java? dir files))
                    ((equal? arg "-nim")
-                    (loop (cdr args) entity? serial? dart? python? #t clang? erlang? java? dir files))
+                    (loop (cdr args) entity? serial? pony? dart? python? #t clang? erlang? java? dir files))
                    ((equal? arg "-clang")
-                    (loop (cdr args) entity? serial? dart? python? nim? #t erlang? java? dir files))
+                    (loop (cdr args) entity? serial? pony? dart? python? nim? #t erlang? java? dir files))
                    ((equal? arg "-erlang")
-                    (loop (cdr args) entity? serial? dart? python? nim? clang? #t java? dir files))
+                    (loop (cdr args) entity? serial? pony? dart? python? nim? clang? #t java? dir files))
                    ((equal? arg "-java")
-                    (loop (cdr args) entity? serial? dart? python? nim? clang? erlang? #t dir files))
+                    (loop (cdr args) entity? serial? pony? dart? python? nim? clang? erlang? #t dir files))
                    ((equal? arg "-d")
                     (if (> (length (cdr args)) 0)
                         (let ((next (cadr args)))
                           (if (not (char=? (string-ref next 0) #\-))
-                              (loop (cddr args) entity? serial? dart? python? nim? clang? erlang? java? next files)
+                              (loop (cddr args) entity? serial? pony? dart? python? nim? clang? erlang? java? next files)
                               (error "main" "output dir not specified")))
                         (error "main" "output dir not specified")))
                    ((not (char=? (string-ref arg 0) #\-))
-                    (loop (cdr args) entity? serial? dart? python? nim? clang? erlang? java? dir (cons arg files)))
+                    (loop (cdr args) entity? serial? pony? dart? python? nim? clang? erlang? java? dir (cons arg files)))
                    (else
-                    (loop (cdr args) entity? serial? dart? python? nim? clang? erlang? java? dir files)))))))))
+                    (loop (cdr args) entity? serial? pony? dart? python? nim? clang? erlang? java? dir files)))))))))
 #+end_src
 ** 核心代碼
 
@@ -517,22 +525,32 @@ capnproto 類似的壓縮零方法：
   (define (write-string str)
     (for-each (lambda (x) (write-char x)) (string->list str)))
 
-  (define (indent x)
+  (define (spaces x)
     (make-string x #\ ))
 
-  (define (indent+ a . b)
+  (define (indent i a . b)
     (let loop ((s a)
-               (i b))
-      (if (null? i)
-          (indent s)
-          (loop (+ s (car i)) (cdr i)))))
+               (r b))
+      (if (null? r)
+          (string-append (spaces i) s)
+          (loop (string-append s (car r)) (cdr r)))))
 
   (define (indent-line i a . b)
     (let loop ((s a)
                (r b))
       (if (null? r)
-          (string-append (indent i) s "\n")
+          (string-append (spaces i) s "\n")
           (loop (string-append s (car r)) (cdr r)))))
+
+  (define (string-join strs delim)
+    "Join list of strings together by delim into one string."
+    (let loop ((ls strs)
+               (result ""))
+      (cond
+       ((null? ls) result)
+       ((null? (cdr ls)) (string-append result (car ls)))
+       (else
+        (loop (cdr ls) (string-append result (car ls) delim))))))
 
 #+end_src
 ** State Machine
