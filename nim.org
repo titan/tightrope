@@ -764,7 +764,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
     elif cast[int](ffcnt) > 0:
       dst[ffpos] = ffcnt
     dst[0] = cast[byte](blen div dptr + (if (blen mod dptr != 0): 1 else: 0))
-    delete(dst, dptr + 1, len(dst))
+    delete(dst, dptr, len(dst))
     return dst
 
   proc unpack*(src: seq[byte], start: int, slen: int): seq[byte] =
@@ -801,7 +801,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
               dptr += 1
           sptr += cnt + 1
     if dptr + 1 < len(dst):
-      delete(dst, dptr + 1, len(dst))
+      delete(dst, dptr, len(dst))
     return dst
 
   proc unpack*(src: seq[byte]): seq[byte] = unpack(src, 0, len(src))
