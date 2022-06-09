@@ -957,7 +957,7 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
         (else (>pony-object-type (symbol->string type)))))
     (if (array-type? type)
         (let ((sub-type (just-type (array-base-type type))))
-          (string-append "Array[" sub-type "]"))
+          (string-append "Array[" sub-type "] val"))
         (just-type type)))
 
   (define (>pony-type type)
