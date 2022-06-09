@@ -59,14 +59,30 @@
                (fields (append primitive-fields compound-fields))
                (field-decls (strcat (map (lambda (x) (indent-line 2 ", " (generate-pony-field-declare x))) (cdr fields))))
                (content
-                (string-append
-                 (indent-line 0 "use \"buffered\"")
-                 (indent-line 0 "type " tname " is")
-                 (indent-line 2 "( " (generate-pony-field-declare (car fields)))
-                 field-decls
-                 (indent-line 2 ")")
-                 (indent-line 0 "primitive _" tname)
-                 (generate-pony-entity-helper sname primitive-fields compound-fields))))
+                (if (eq? (length fields) 1)
+                    (let* ((field (car fields))
+                           (fname (>pony-token (field-name field)))
+                           (ftype (>pony-type (field-type field))))
+                      (string-append
+                       (indent-line 0 "use \"buffered\"")
+                       (indent-line 0 "type " tname " is " ftype)
+                       (indent-line 0 "primitive _" tname)
+                       (indent-line 2 "fun val apply(")
+                       (indent-line 4 fname "': " ftype ")")
+                       (indent-line 2 ": " tname " =>")
+                       (indent-line 4 fname "'")
+                       (indent-line 2 "fun val " fname "(")
+                       (indent-line 4 "data: " tname ")")
+                       (indent-line 2 ": " ftype " =>")
+                       (indent-line 4 "data")))
+                    (string-append
+                     (indent-line 0 "use \"buffered\"")
+                     (indent-line 0 "type " tname " is")
+                     (indent-line 2 "( " (generate-pony-field-declare (car fields)))
+                     field-decls
+                     (indent-line 2 ")")
+                     (indent-line 0 "primitive _" tname)
+                     (generate-pony-entity-helper sname primitive-fields compound-fields)))))
           (with-output-to-file
               (string-append dir sname ".pony")
             (lambda ()
@@ -607,7 +623,9 @@
        (indent-line 8 "try buf.skip(size)? end")
        (indent-line 6 "end")
        (indent-line 4 "end")
-       (indent-line 4 "(" (string-join (map (lambda (x) (string-append (>pony-token (field-name x)) "'")) (append primitive-fields compound-fields)) ", ") ")"))))
+       (if (eq? (+ (length primitive-fields) (length compound-fields)) 1)
+           (indent-line 4 (string-append (>pony-token (field-name (car (append primitive-fields compound-fields)))) "'"))
+           (indent-line 4 "(" (string-join (map (lambda (x) (string-append (>pony-token (field-name x)) "'")) (append primitive-fields compound-fields)) ", ") ")")))))
 
   (define (generate-pony-decoder sname primitive-fields compound-fields)
     (let ((tname (>pony-object-type sname))
