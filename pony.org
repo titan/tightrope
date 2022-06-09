@@ -324,7 +324,7 @@
                    (indent-line (+ indent 6) "buf.push(0)")
                    (indent-line (+ indent 6) "buf.push(0)")
                    (indent-line (+ indent 6) "buf.push(0)")
-                   (indent-line (+ indent 6) "_" (>pony-object-type base-type) ".encode(x, buf)")
+                   (indent-line (+ indent 6) "_" (>pony-object-type (symbol->string base-type)) ".encode(x, buf)")
                    (indent-line (+ indent 6) "let xsize: USize = buf.size() - base' - 4")
                    (indent-line (+ indent 6) "total_size = total_size + 4 + xsize")
                    (indent-line (+ indent 6) "let hh' = ((xsize and 0xFF000000) >> 24).u8()")
@@ -947,17 +947,18 @@ Tightrope 把壓縮和解壓的代碼放到獨立的文件中，供使用者調�
       (else (string-append "(" (>pony-object-type (symbol->string type)) " | None)"))))
 
   (define (>pony-just-type type)
+    (define (just-type type)
+      (case type
+        ((byte) "U8")
+        ((short) "I16")
+        ((int) "I32")
+        ((long) "I64")
+        ((string) "String val")
+        (else (>pony-object-type (symbol->string type)))))
     (if (array-type? type)
-        (if (string-array-type? type)
-            "Array[String val] val"
-            (string-append "Array[" (>pony-base-type (array-base-type type)) "] val"))
-        (case type
-          ((byte) "U8")
-          ((short) "I16")
-          ((int) "I32")
-          ((long) "I64")
-          ((string) "String val")
-          (else (>pony-object-type (symbol->string type))))))
+        (let ((sub-type (just-type (array-base-type type))))
+          (string-append "Array[" sub-type "]"))
+        (just-type type)))
 
   (define (>pony-type type)
     (if (array-type? type)
